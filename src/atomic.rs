@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::{marker::PhantomPinned, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use std::marker::PhantomData;
 use std::mem;
 
@@ -28,24 +28,170 @@ fn decompose_tag<T>(data: usize) -> (usize, usize) {
     (data & !low_bits::<T>(), data & low_bits::<T>())
 }
 
+// pub struct Tag<P>(usize, PhantomData<P>);
+// impl<P> Tag<P> {
+//     /// Creates tag by applying a bit mask that only keeps the the low bits 
+//     /// `usize` type.
+//     pub fn new(tag: usize) -> Self {
+//         let tag = tag & low_bits::<P>();
+//         Self(tag, PhantomData)
+//     }
+// }
+
+// impl<P> From<usize> for Tag<P> {
+//     fn from(val: usize) -> Self {
+//         Self::new(val)
+//     }
+// }
+
+// impl<P> From<Tag<P>> for usize {
+//     fn from(tag: Tag<P>) -> Self {
+//         tag.0
+//     }
+// }
+
+pub struct TaggedArc<T> {
+    data: usize,
+    _marker: PhantomData<T>
+}
+
+impl<T> TaggedArc<T> {
+    pub fn new(val: impl Into<Arc<T>>) -> Self {
+        let ptr = val.into();
+        Self::from_arc(ptr)
+    }
+
+    pub fn new_with_tag(val: impl Into<Arc<T>>, tag: usize) -> Self {
+        let ptr: Arc<T> = val.into();
+        let raw = Arc::into_raw(ptr) as usize;
+        let data = compose_tag::<T>(raw, tag);
+        unsafe {
+            Self::from_usize(data)
+        }
+    }
+
+    pub fn from_arc(val: Arc<T>) -> Self {
+        let data = Arc::into_raw(val) as usize;
+        Self {
+            data,
+            _marker: PhantomData
+        }
+    }
+
+    pub fn into_arc(self) -> Arc<T> {
+        // remove tag information
+        let(data, _) = decompose_tag::<T>(self.data);
+        let ptr = data as *const T;
+        unsafe {
+            Arc::from_raw(ptr)
+        }
+    }
+
+    pub fn into_usize(self) -> usize {
+        self.data
+    }
+
+    /// # Safety
+    /// 
+    /// `data` may not be a valid pointer
+    pub unsafe fn from_usize(data: usize) -> Self {
+        Self {
+            data,
+            _marker: PhantomData
+        }
+    }
+
+    pub fn as_raw(&self) -> *const T {
+        let (data, _) = decompose_tag::<T>(self.data);
+        data as *const T
+    }
+
+    pub unsafe fn from_raw(raw: *const T) -> Self {
+        let data = raw as usize;
+        Self::from_usize(data)
+    }
+
+    pub fn into_raw(self) -> *const T {
+        self.as_raw()
+    }
+
+    pub fn tag(&self) -> usize {
+        let (_, tag) = decompose_tag::<T>(self.data);
+        tag
+    }
+
+    pub fn with_tag(&self, tag: usize) -> Self {
+        let data = compose_tag::<T>(self.data, tag);
+        Self {
+            data,
+            _marker: PhantomData
+        }
+    }
+}
+
+// impl<T> From<Arc<T>> for TaggedArc<T> {
+//     fn from(val: Arc<T>) -> Self {
+//         let ptr: Arc<T> = val.into();
+//         Self::from_arc(ptr)
+//     }
+// }
+
+impl<T, P: Into<Arc<T>>> From<P> for TaggedArc<T> {
+    fn from(val: P) -> Self {
+        let ptr: Arc<T> = val.into();
+        Self::from_arc(ptr)
+    }
+}
+
+// impl<T> From<TaggedArc<T>> for Arc<T> {
+//     fn from(tagged: TaggedArc<T>) -> Self {
+//         tagged.into_arc()
+//     }
+// }
+
+impl<T> Clone for TaggedArc<T> {
+    fn clone(&self) -> Self {
+        let (raw, tag) = decompose_tag::<T>(self.data);
+        let ptr: Arc<T> = unsafe {
+            Arc::from_raw(raw as *const T)
+        };
+        let new = Arc::clone(&ptr);
+        let new_data = Arc::into_raw(new) as usize;
+        let tagged_data = compose_tag::<T>(new_data, tag);
+        unsafe {
+            Self::from_usize(tagged_data)
+        }
+    }
+}
+
+/// A wrapper that change all API to only accept and return `Arc` and allows tagging
 pub struct AtomicArc<T> {
     data: AtomicUsize,
     _marker: PhantomData<T>,
 }
 
 impl<T> AtomicArc<T> {
-    pub fn new(val: T) -> Self {
-        let val = Arc::new(val);
-        Self::from_arc(val)
+    pub fn new<P: Into<Arc<T>>>(val: P) -> Self {
+        let ptr: Arc<T> = val.into();
+        Self::from_arc(ptr)
     }
 
     pub fn from_arc(val: Arc<T>) -> Self {
         let data = Arc::into_raw(val) as usize;
-        Self::from_usize(data)
+        unsafe {
+            Self::from_usize(data)
+        }
+    }
+
+    pub fn from_tagged(tagged: TaggedArc<T>) -> Self {
+        let data = tagged.into_usize();
+        unsafe {
+            Self::from_usize(data)
+        }
     }
 
     // Only API that expose Arc should be public
-    fn from_usize(val: usize) -> Self {
+    unsafe fn from_usize(val: usize) -> Self {
         let data = AtomicUsize::new(val);
         Self {
             data,
@@ -57,29 +203,87 @@ impl<T> AtomicArc<T> {
         unimplemented!()
     }
 
-    pub fn into_inner(self) -> *mut T {
-        let data = self.data.into_inner();
-        data as *mut T
+    /// Loads a value from the atomic pointer.
+    ///
+    /// `load` takes an `Ordering` argument which describes 
+    /// the memory ordering of this operation. 
+    /// Possible values are `SeqCst`, `Acquire` and `Relaxed`.
+    ///
+    /// # Panics
+    /// 
+    /// Panics if `order` is `Release` or `AcqRel`.
+    pub fn load(&self, order: Ordering) -> TaggedArc<T> {
+        let data = self.data.load(order);
+        unsafe {
+            TaggedArc::from_usize(data)
+        }
     }
 
-    pub fn load() {
-        unimplemented!()
+    /// Stores a value into the pointer
+    ///
+    /// `store` takes an `Ordering` argument which describes 
+    /// the memory ordering of this operation. 
+    /// Possible values are `SeqCst`, `Release` and `Relaxed`.
+    ///
+    /// # Panics
+    /// 
+    /// Panics if `order` is `Acquire` or `AcqRel`.
+    pub fn store<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) {
+        let ptr: TaggedArc<T> = val.into();
+        let new_data = ptr.into_usize();
+        self.data.store(new_data, order)
     }
 
-    pub fn store() {
-        unimplemented!()
+    /// 
+    pub fn swap<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) -> TaggedArc<T> {
+        let ptr: TaggedArc<T> = val.into();
+        let new_data = ptr.into_usize();
+        let old_data = self.data.swap(new_data, order);
+        
+        // SAFETY: only raw Arc pointers will be stored in the pointer
+        unsafe {
+            TaggedArc::from_usize(old_data)
+        }
     }
 
-    pub fn swap() {
-        unimplemented!()
+    pub fn compare_exchange(
+        &self,
+        current: impl Into<TaggedArc<T>>,
+        new: impl Into<TaggedArc<T>>,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<TaggedArc<T>, TaggedArc<T>> {
+        let current: TaggedArc<T> = current.into();
+        let current = current.into_usize();
+        let new: TaggedArc<T> = new.into();
+        let new = new.into_usize();
+        self.data.compare_exchange(current, new, success, failure)
+            .map(|success| {
+                unsafe {TaggedArc::from_usize(success)}
+            })
+            .map_err(|failure| {
+                unsafe {TaggedArc::from_usize(failure)}
+            })
     }
 
-    pub fn compare_exchange() {
-        unimplemented!()
-    }
-
-    pub fn compare_exchange_weak() {
-        unimplemented!()
+    pub fn compare_exchange_weak(
+        &self,
+        current: impl Into<TaggedArc<T>>,
+        new: impl Into<TaggedArc<T>>,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<TaggedArc<T>, TaggedArc<T>> {
+        let current: TaggedArc<T> = current.into();
+        let current = current.into_usize();
+        let new: TaggedArc<T> = new.into();
+        let new = new.into_usize();
+        self.data.compare_exchange_weak(current, new, success, failure)
+            .map(|success| {
+                unsafe{ TaggedArc::from_usize(success) }
+            })
+            .map_err(|failure| {
+                unsafe{ TaggedArc::from_usize(failure) }
+            })
     }
 
     /// Similar to the same function in `crossbeam_epoch::Atomic`
