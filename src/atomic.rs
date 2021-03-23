@@ -28,28 +28,6 @@ fn decompose_tag<T>(data: usize) -> (usize, usize) {
     (data & !low_bits::<T>(), data & low_bits::<T>())
 }
 
-// pub struct Tag<P>(usize, PhantomData<P>);
-// impl<P> Tag<P> {
-//     /// Creates tag by applying a bit mask that only keeps the the low bits 
-//     /// `usize` type.
-//     pub fn new(tag: usize) -> Self {
-//         let tag = tag & low_bits::<P>();
-//         Self(tag, PhantomData)
-//     }
-// }
-
-// impl<P> From<usize> for Tag<P> {
-//     fn from(val: usize) -> Self {
-//         Self::new(val)
-//     }
-// }
-
-// impl<P> From<Tag<P>> for usize {
-//     fn from(tag: Tag<P>) -> Self {
-//         tag.0
-//     }
-// }
-
 pub struct TaggedArc<T> {
     data: usize,
     _marker: PhantomData<T>
@@ -61,7 +39,7 @@ impl<T> TaggedArc<T> {
         Self::from_arc(ptr)
     }
 
-    pub fn new_with_tag(val: impl Into<Arc<T>>, tag: usize) -> Self {
+    pub fn compose(val: impl Into<Arc<T>>, tag: usize) -> Self {
         let ptr: Arc<T> = val.into();
         let raw = Arc::into_raw(ptr) as usize;
         let data = compose_tag::<T>(raw, tag);
@@ -80,10 +58,15 @@ impl<T> TaggedArc<T> {
 
     pub fn into_arc(self) -> Arc<T> {
         // remove tag information
-        let(data, _) = decompose_tag::<T>(self.data);
+        let (ptr, _) = self.decompose();
+        ptr
+    }
+
+    pub fn decompose(self) -> (Arc<T>, usize) {
+        let (data, tag) = decompose_tag::<T>(self.data);
         let ptr = data as *const T;
         unsafe {
-            Arc::from_raw(ptr)
+            (Arc::from_raw(ptr), tag)
         }
     }
 
@@ -151,16 +134,10 @@ impl<T, P: Into<Arc<T>>> From<P> for TaggedArc<T> {
 
 impl<T> Clone for TaggedArc<T> {
     fn clone(&self) -> Self {
-        let (raw, tag) = decompose_tag::<T>(self.data);
-        let ptr: Arc<T> = unsafe {
-            Arc::from_raw(raw as *const T)
-        };
+        // let (raw, tag) = decompose_tag::<T>(self.data);
+        let (ptr, tag) = self.decompose();
         let new = Arc::clone(&ptr);
-        let new_data = Arc::into_raw(new) as usize;
-        let tagged_data = compose_tag::<T>(new_data, tag);
-        unsafe {
-            Self::from_usize(tagged_data)
-        }
+        TaggedArc::compose(new, tag)
     }
 }
 
@@ -286,20 +263,77 @@ impl<T> AtomicArc<T> {
             })
     }
 
-    /// Similar to the same function in `crossbeam_epoch::Atomic`
-    pub fn fetch_and() {
-        unimplemented!()
+    /// Fetches the value, and applies a function to it that returns an optional
+    /// new value. Returns a `Result` of `Ok(previous_value)` if the function
+    /// returned `Some(_)`, else `Err(previous_value)`.
+    ///
+    /// Note: This may call the function multiple times if the value has been
+    /// changed from other threads in the meantime, as long as the function
+    /// returns `Some(_)`, but the function will have been applied only once to
+    /// the stored value.
+    ///
+    /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
+    /// ordering of this operation. The first describes the required ordering for
+    /// when the operation finally succeeds while the second describes the
+    /// required ordering for loads. These correspond to the success and failure
+    /// orderings of [`AtomicPtr::compare_exchange`] respectively.
+    ///
+    /// Using [`Acquire`] as success ordering makes the store part of this
+    /// operation [`Relaxed`], and using [`Release`] makes the final successful
+    /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
+    /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
+    /// success ordering.
+    pub fn fetch_update<F>(
+        &self,
+        set_order: Ordering,
+        fetch_order: Ordering,
+        mut f: F
+    ) -> Result<TaggedArc<T>, TaggedArc<T>>
+    where 
+        F: FnMut(&TaggedArc<T>) -> Option<TaggedArc<T>>
+    {
+        let mut prev = self.load(fetch_order);
+        while let Some(next) = f(&prev) {
+            match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                x @ Ok(_) => return x,
+                Err(next_prev) => prev = next_prev,
+            }
+        }
+        Err(prev)
     }
 
-    /// Similar to the same function in `crossbeam_epoch::Atomic`
-    pub fn fetch_or() {
-        unimplemented!()
-    }
+    // /// Similar to the same function in `crossbeam_epoch::Atomic`
+    // pub fn fetch_and(
+    //     &self,
+    //     tag: usize,
+    //     order: Ordering
+    // ) -> TaggedArc<T> {
+    //     let mask = low_bits::<T>(); // ensure tag is bounded within the unused bits
+    //     let tag = tag | mask;
+    //     let val = tag | !mask;
+    //     let old = self.data.fetch_and(val, order);
+    //     unsafe {
+    //         TaggedArc::from_usize(old).clone()
+    //     }
+    // }
 
-    /// Similar to the same function in `crossbeam_epoch::Atomic`
-    pub fn fetch_xor() {
-        unimplemented!()
-    }
+    // /// Similar to the same function in `crossbeam_epoch::Atomic`
+    // pub fn fetch_or(
+    //     &self,
+    //     tag: usize,
+    //     order: Ordering
+    // ) -> TaggedArc<T> {
+    //     unimplemented!()
+    // }
+
+    // /// Similar to the same function in `crossbeam_epoch::Atomic`
+    // pub fn fetch_xor(
+    //     &self,
+    //     tag: usize,
+    //     order: Ordering
+    // ) -> TaggedArc<T> {
+    //     unimplemented!()
+    // }
 }
 
 impl<T> From<Arc<T>> for AtomicArc<T> {
