@@ -68,7 +68,27 @@ impl<T> TaggedArc<T> {
         unsafe {
             (Arc::from_raw(ptr), tag)
         }
-    }
+    }// pub struct Tag<P>(usize, PhantomData<P>);
+// impl<P> Tag<P> {
+//     /// Creates tag by applying a bit mask that only keeps the the low bits 
+//     /// `usize` type.
+//     pub fn new(tag: usize) -> Self {
+//         let tag = tag & low_bits::<P>();
+//         Self(tag, PhantomData)
+//     }
+// }
+
+// impl<P> From<usize> for Tag<P> {
+//     fn from(val: usize) -> Self {
+//         Self::new(val)
+//     }
+// }
+
+// impl<P> From<Tag<P>> for usize {
+//     fn from(tag: Tag<P>) -> Self {
+//         tag.0
+//     }
+// }
 
     pub fn into_usize(self) -> usize {
         self.data
@@ -271,6 +291,8 @@ impl<T> AtomicArc<T> {
     /// changed from other threads in the meantime, as long as the function
     /// returns `Some(_)`, but the function will have been applied only once to
     /// the stored value.
+    ///
+    /// Note: This does not protect the program from the ABA problem. 
     ///
     /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
     /// ordering of this operation. The first describes the required ordering for
