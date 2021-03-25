@@ -1,163 +1,149 @@
-use std::{marker::PhantomPinned, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use std::marker::PhantomData;
-use std::mem;
 
-/// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
-#[inline]
-fn low_bits<T>() -> usize {
-    (1 << mem::align_of::<T>()) - 1
-}
 
-/// Panics if the pointer is not properly unaligned.
-#[inline]
-fn ensure_aligned<T>(raw: usize) {
-    assert_eq!(raw & low_bits::<T>(), 0, "unaligned pointer");
-}
+use cfg_if::cfg_if;
 
-/// Given a tagged pointer `data`, returns the same pointer, but tagged with `tag`.
-///
-/// `tag` is truncated to fit into the unused bits of the pointer to `T`.
-#[inline]
-fn compose_tag<T>(data: usize, tag: usize) -> usize {
-    (data & !low_bits::<T>()) | (tag & low_bits::<T>())
-}
+cfg_if! {
+    if #[cfg(feature = "tag")] {
+        use std::mem;
+        use std::borrow::Borrow;
 
-/// Decomposes a tagged pointer `data` into the pointer and the tag.
-#[inline]
-fn decompose_tag<T>(data: usize) -> (usize, usize) {
-    (data & !low_bits::<T>(), data & low_bits::<T>())
-}
-
-pub struct TaggedArc<T> {
-    data: usize,
-    _marker: PhantomData<T>
-}
-
-impl<T> TaggedArc<T> {
-    pub fn new(val: impl Into<Arc<T>>) -> Self {
-        let ptr = val.into();
-        Self::from_arc(ptr)
-    }
-
-    pub fn compose(val: impl Into<Arc<T>>, tag: usize) -> Self {
-        let ptr: Arc<T> = val.into();
-        let raw = Arc::into_raw(ptr) as usize;
-        let data = compose_tag::<T>(raw, tag);
-        unsafe {
-            Self::from_usize(data)
+        /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
+        #[inline]
+        fn low_bits<T>() -> usize {
+            (1 << mem::align_of::<T>()) - 1
         }
-    }
 
-    pub fn from_arc(val: Arc<T>) -> Self {
-        let data = Arc::into_raw(val) as usize;
-        Self {
-            data,
-            _marker: PhantomData
+        // /// Panics if the pointer is not properly unaligned.
+        // #[allow(dead_code)]
+        // #[inline]
+        // fn ensure_aligned<T>(raw: usize) {
+        //     assert_eq!(raw & low_bits::<T>(), 0, "unaligned pointer");
+        // }
+
+        /// Given a tagged pointer `data`, returns the same pointer, but tagged with `tag`.
+        ///
+        /// `tag` is truncated to fit into the unused bits of the pointer to `T`.
+        #[inline]
+        fn compose_tag<T>(data: usize, tag: usize) -> usize {
+            (data & !low_bits::<T>()) | (tag & low_bits::<T>())
         }
-    }
 
-    pub fn into_arc(self) -> Arc<T> {
-        // remove tag information
-        let (ptr, _) = self.decompose();
-        ptr
-    }
-
-    pub fn decompose(self) -> (Arc<T>, usize) {
-        let (data, tag) = decompose_tag::<T>(self.data);
-        let ptr = data as *const T;
-        unsafe {
-            (Arc::from_raw(ptr), tag)
+        /// Decomposes a tagged pointer `data` into the pointer and the tag.
+        #[inline]
+        fn decompose_tag<T>(data: usize) -> (usize, usize) {
+            (data & !low_bits::<T>(), data & low_bits::<T>())
         }
-    }// pub struct Tag<P>(usize, PhantomData<P>);
-// impl<P> Tag<P> {
-//     /// Creates tag by applying a bit mask that only keeps the the low bits 
-//     /// `usize` type.
-//     pub fn new(tag: usize) -> Self {
-//         let tag = tag & low_bits::<P>();
-//         Self(tag, PhantomData)
-//     }
-// }
 
-// impl<P> From<usize> for Tag<P> {
-//     fn from(val: usize) -> Self {
-//         Self::new(val)
-//     }
-// }
-
-// impl<P> From<Tag<P>> for usize {
-//     fn from(tag: Tag<P>) -> Self {
-//         tag.0
-//     }
-// }
-
-    pub fn into_usize(self) -> usize {
-        self.data
-    }
-
-    /// # Safety
-    /// 
-    /// `data` may not be a valid pointer
-    pub unsafe fn from_usize(data: usize) -> Self {
-        Self {
-            data,
-            _marker: PhantomData
+        pub struct TaggedArc<T: ?Sized> {
+            data: usize,
+            _marker: PhantomData<T>
         }
-    }
-
-    pub fn as_raw(&self) -> *const T {
-        let (data, _) = decompose_tag::<T>(self.data);
-        data as *const T
-    }
-
-    pub unsafe fn from_raw(raw: *const T) -> Self {
-        let data = raw as usize;
-        Self::from_usize(data)
-    }
-
-    pub fn into_raw(self) -> *const T {
-        self.as_raw()
-    }
-
-    pub fn tag(&self) -> usize {
-        let (_, tag) = decompose_tag::<T>(self.data);
-        tag
-    }
-
-    pub fn with_tag(&self, tag: usize) -> Self {
-        let data = compose_tag::<T>(self.data, tag);
-        Self {
-            data,
-            _marker: PhantomData
+        
+        unsafe impl<T: ?Sized + Sync + Send> Send for TaggedArc<T> {}
+        unsafe impl<T: ?Sized + Sync + Send> Sync for TaggedArc<T> {}
+        
+        impl<T> TaggedArc<T> {
+            pub fn new(val: impl Into<Arc<T>>) -> Self {
+                let ptr = val.into();
+                Self::from_arc(ptr)
+            }
+        
+            pub fn compose(val: impl Into<Arc<T>>, tag: usize) -> Self {
+                let ptr: Arc<T> = val.into();
+                let raw = Arc::into_raw(ptr) as usize;
+                let data = compose_tag::<T>(raw, tag);
+                unsafe {
+                    Self::from_usize(data)
+                }
+            }
+        
+            pub fn from_arc(val: Arc<T>) -> Self {
+                let data = Arc::into_raw(val) as usize;
+                Self {
+                    data,
+                    _marker: PhantomData
+                }
+            }
+        
+            pub fn into_arc(self) -> Arc<T> {
+                // remove tag information
+                let (ptr, _) = Self::decompose(self);
+                ptr
+            }
+        
+            pub fn decompose(ptr: impl Borrow<TaggedArc<T>>) -> (Arc<T>, usize) {
+                let (data, tag) = decompose_tag::<T>(ptr.borrow().data);
+                let ptr = data as *const T;
+                unsafe {
+                    (Arc::from_raw(ptr), tag)
+                }
+            }
+        
+            pub fn into_usize(self) -> usize {
+                self.data
+            }
+        
+            /// # Safety
+            /// 
+            /// `usize` may not be a valid pointer address
+            pub unsafe fn from_usize(data: usize) -> Self {
+                Self {
+                    data,
+                    _marker: PhantomData
+                }
+            }
+        
+            pub fn as_raw(&self) -> *const T {
+                let (data, _) = decompose_tag::<T>(self.data);
+                data as *const T
+            }
+        
+            pub unsafe fn from_raw(raw: *const T) -> Self {
+                let data = raw as usize;
+                Self::from_usize(data)
+            }
+        
+            pub fn into_raw(self) -> *const T {
+                self.as_raw()
+            }
+        
+            pub fn tag(&self) -> usize {
+                let (_, tag) = decompose_tag::<T>(self.data);
+                tag
+            }
+        
+            pub fn with_tag(&self, tag: usize) -> Self {
+                let data = compose_tag::<T>(self.data, tag);
+                Self {
+                    data,
+                    _marker: PhantomData
+                }
+            }
         }
-    }
-}
+        
+        impl<T> From<Arc<T>> for TaggedArc<T> {
+            fn from(ptr: Arc<T>) -> Self {
+                Self::from_arc(ptr)
+            }
+        }
 
-// impl<T> From<Arc<T>> for TaggedArc<T> {
-//     fn from(val: Arc<T>) -> Self {
-//         let ptr: Arc<T> = val.into();
-//         Self::from_arc(ptr)
-//     }
-// }
+        impl<T> From<TaggedArc<T>> for Arc<T> {
+            fn from(ptr: TaggedArc<T>) -> Self {
+                ptr.into_arc()
+            }
+        }
 
-impl<T, P: Into<Arc<T>>> From<P> for TaggedArc<T> {
-    fn from(val: P) -> Self {
-        let ptr: Arc<T> = val.into();
-        Self::from_arc(ptr)
-    }
-}
-
-// impl<T> From<TaggedArc<T>> for Arc<T> {
-//     fn from(tagged: TaggedArc<T>) -> Self {
-//         tagged.into_arc()
-//     }
-// }
-
-impl<T> Clone for TaggedArc<T> {
-    fn clone(&self) -> Self {
-        // let (raw, tag) = decompose_tag::<T>(self.data);
-        let (ptr, tag) = self.decompose();
-        let new = Arc::clone(&ptr);
-        TaggedArc::compose(new, tag)
+        impl<T> Clone for TaggedArc<T> {
+            fn clone(&self) -> Self {
+                // let (raw, tag) = decompose_tag::<T>(self.data);
+                let (ptr, tag) = Self::decompose(self);
+                let new = Arc::clone(&ptr);
+                TaggedArc::compose(new, tag)
+            }
+        }
+        
     }
 }
 
@@ -166,6 +152,9 @@ pub struct AtomicArc<T> {
     data: AtomicUsize,
     _marker: PhantomData<T>,
 }
+
+unsafe impl<T: Sync + Send> Send for AtomicArc<T> {}
+unsafe impl<T: Sync + Send> Sync for AtomicArc<T> {}
 
 impl<T> AtomicArc<T> {
     pub fn new<P: Into<Arc<T>>>(val: P) -> Self {
@@ -180,6 +169,7 @@ impl<T> AtomicArc<T> {
         }
     }
 
+    #[cfg(feature = "tag")]
     pub fn from_tagged(tagged: TaggedArc<T>) -> Self {
         let data = tagged.into_usize();
         unsafe {
@@ -199,163 +189,266 @@ impl<T> AtomicArc<T> {
     pub fn get_mut() {
         unimplemented!()
     }
+}
 
-    /// Loads a value from the atomic pointer.
-    ///
-    /// `load` takes an `Ordering` argument which describes 
-    /// the memory ordering of this operation. 
-    /// Possible values are `SeqCst`, `Acquire` and `Relaxed`.
-    ///
-    /// # Panics
-    /// 
-    /// Panics if `order` is `Release` or `AcqRel`.
-    pub fn load(&self, order: Ordering) -> TaggedArc<T> {
-        let data = self.data.load(order);
-        unsafe {
-            TaggedArc::from_usize(data)
-        }
-    }
+cfg_if!{
+    if #[cfg(feature = "tag")] {
+        impl<T> AtomicArc<T> {
+            /// Loads a value from the atomic pointer.
+            ///
+            /// `load` takes an `Ordering` argument which describes 
+            /// the memory ordering of this operation. 
+            /// Possible values are `SeqCst`, `Acquire` and `Relaxed`.
+            ///
+            /// # Panics
+            /// 
+            /// Panics if `order` is `Release` or `AcqRel`.
+            pub fn load(&self, order: Ordering) -> TaggedArc<T> {
+                let data = self.data.load(order);
+                unsafe {
+                    TaggedArc::from_usize(data)
+                }
+            }
 
-    /// Stores a value into the pointer
-    ///
-    /// `store` takes an `Ordering` argument which describes 
-    /// the memory ordering of this operation. 
-    /// Possible values are `SeqCst`, `Release` and `Relaxed`.
-    ///
-    /// # Panics
-    /// 
-    /// Panics if `order` is `Acquire` or `AcqRel`.
-    pub fn store<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) {
-        let ptr: TaggedArc<T> = val.into();
-        let new_data = ptr.into_usize();
-        self.data.store(new_data, order)
-    }
+            /// Stores a value into the pointer
+            ///
+            /// `store` takes an `Ordering` argument which describes 
+            /// the memory ordering of this operation. 
+            /// Possible values are `SeqCst`, `Release` and `Relaxed`.
+            ///
+            /// # Panics
+            /// 
+            /// Panics if `order` is `Acquire` or `AcqRel`.
+            pub fn store<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) {
+                let ptr: TaggedArc<T> = val.into();
+                let new_data = ptr.into_usize();
+                self.data.store(new_data, order)
+            }
 
-    /// 
-    pub fn swap<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) -> TaggedArc<T> {
-        let ptr: TaggedArc<T> = val.into();
-        let new_data = ptr.into_usize();
-        let old_data = self.data.swap(new_data, order);
-        
-        // SAFETY: only raw Arc pointers will be stored in the pointer
-        unsafe {
-            TaggedArc::from_usize(old_data)
-        }
-    }
+            pub fn swap<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) -> TaggedArc<T> {
+                let ptr: TaggedArc<T> = val.into();
+                let new_data = ptr.into_usize();
+                let old_data = self.data.swap(new_data, order);
+                
+                // SAFETY: only raw Arc pointers will be stored in the pointer
+                unsafe {
+                    TaggedArc::from_usize(old_data)
+                }
+            }   
 
-    pub fn compare_exchange(
-        &self,
-        current: impl Into<TaggedArc<T>>,
-        new: impl Into<TaggedArc<T>>,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<TaggedArc<T>, TaggedArc<T>> {
-        let current: TaggedArc<T> = current.into();
-        let current = current.into_usize();
-        let new: TaggedArc<T> = new.into();
-        let new = new.into_usize();
-        self.data.compare_exchange(current, new, success, failure)
-            .map(|success| {
-                unsafe {TaggedArc::from_usize(success)}
-            })
-            .map_err(|failure| {
-                unsafe {TaggedArc::from_usize(failure)}
-            })
-    }
+            pub fn compare_exchange(
+                &self,
+                current: impl Into<TaggedArc<T>>,
+                new: impl Into<TaggedArc<T>>,
+                success: Ordering,
+                failure: Ordering,
+            ) -> Result<TaggedArc<T>, TaggedArc<T>> {
+                let current: TaggedArc<T> = current.into();
+                let current = current.into_usize();
+                let new: TaggedArc<T> = new.into();
+                let new = new.into_usize();
+                self.data.compare_exchange(current, new, success, failure)
+                    .map(|success| {
+                        unsafe {TaggedArc::from_usize(success)}
+                    })
+                    .map_err(|failure| {
+                        unsafe {TaggedArc::from_usize(failure)}
+                    })
+            }
 
-    pub fn compare_exchange_weak(
-        &self,
-        current: impl Into<TaggedArc<T>>,
-        new: impl Into<TaggedArc<T>>,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<TaggedArc<T>, TaggedArc<T>> {
-        let current: TaggedArc<T> = current.into();
-        let current = current.into_usize();
-        let new: TaggedArc<T> = new.into();
-        let new = new.into_usize();
-        self.data.compare_exchange_weak(current, new, success, failure)
-            .map(|success| {
-                unsafe{ TaggedArc::from_usize(success) }
-            })
-            .map_err(|failure| {
-                unsafe{ TaggedArc::from_usize(failure) }
-            })
-    }
+            pub fn compare_exchange_weak(
+                &self,
+                current: impl Into<TaggedArc<T>>,
+                new: impl Into<TaggedArc<T>>,
+                success: Ordering,
+                failure: Ordering,
+            ) -> Result<TaggedArc<T>, TaggedArc<T>> {
+                let current: TaggedArc<T> = current.into();
+                let current = current.into_usize();
+                let new: TaggedArc<T> = new.into();
+                let new = new.into_usize();
+                self.data.compare_exchange_weak(current, new, success, failure)
+                    .map(|success| {
+                        unsafe{ TaggedArc::from_usize(success) }
+                    })
+                    .map_err(|failure| {
+                        unsafe{ TaggedArc::from_usize(failure) }
+                    })
+            }
 
-    /// Fetches the value, and applies a function to it that returns an optional
-    /// new value. Returns a `Result` of `Ok(previous_value)` if the function
-    /// returned `Some(_)`, else `Err(previous_value)`.
-    ///
-    /// Note: This may call the function multiple times if the value has been
-    /// changed from other threads in the meantime, as long as the function
-    /// returns `Some(_)`, but the function will have been applied only once to
-    /// the stored value.
-    ///
-    /// Note: This does not protect the program from the ABA problem. 
-    ///
-    /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
-    /// ordering of this operation. The first describes the required ordering for
-    /// when the operation finally succeeds while the second describes the
-    /// required ordering for loads. These correspond to the success and failure
-    /// orderings of [`AtomicPtr::compare_exchange`] respectively.
-    ///
-    /// Using [`Acquire`] as success ordering makes the store part of this
-    /// operation [`Relaxed`], and using [`Release`] makes the final successful
-    /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
-    /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
-    /// success ordering.
-    pub fn fetch_update<F>(
-        &self,
-        set_order: Ordering,
-        fetch_order: Ordering,
-        mut f: F
-    ) -> Result<TaggedArc<T>, TaggedArc<T>>
-    where 
-        F: FnMut(&TaggedArc<T>) -> Option<TaggedArc<T>>
-    {
-        let mut prev = self.load(fetch_order);
-        while let Some(next) = f(&prev) {
-            match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
-                x @ Ok(_) => return x,
-                Err(next_prev) => prev = next_prev,
+            /// Fetches the value, and applies a function to it that returns an optional
+            /// new value. Returns a `Result` of `Ok(previous_value)` if the function
+            /// returned `Some(_)`, else `Err(previous_value)`.
+            ///
+            /// Note: This may call the function multiple times if the value has been
+            /// changed from other threads in the meantime, as long as the function
+            /// returns `Some(_)`, but the function will have been applied only once to
+            /// the stored value.
+            ///
+            /// Note: This does not protect the program from the ABA problem. 
+            ///
+            /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
+            /// ordering of this operation. The first describes the required ordering for
+            /// when the operation finally succeeds while the second describes the
+            /// required ordering for loads. These correspond to the success and failure
+            /// orderings of [`AtomicPtr::compare_exchange`] respectively.
+            ///
+            /// Using [`Acquire`] as success ordering makes the store part of this
+            /// operation [`Relaxed`], and using [`Release`] makes the final successful
+            /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
+            /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
+            /// success ordering.
+            pub fn fetch_update<F>(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                mut f: F
+            ) -> Result<TaggedArc<T>, TaggedArc<T>>
+            where 
+                F: FnMut(&TaggedArc<T>) -> Option<TaggedArc<T>>
+            {
+                let mut prev = self.load(fetch_order);
+                while let Some(next) = f(&prev) {
+                    match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                        x @ Ok(_) => return x,
+                        Err(next_prev) => prev = next_prev,
+                    }
+                }
+                Err(prev)
             }
         }
-        Err(prev)
+     } else {
+        impl<T> AtomicArc<T> {
+            /// Loads a value from the atomic pointer.
+            ///
+            /// `load` takes an `Ordering` argument which describes 
+            /// the memory ordering of this operation. 
+            /// Possible values are `SeqCst`, `Acquire` and `Relaxed`.
+            ///
+            /// # Panics
+            /// 
+            /// Panics if `order` is `Release` or `AcqRel`.
+            pub fn load(&self, order: Ordering) -> Arc<T> {
+                let data = self.data.load(order);
+                let raw = data as *const T;
+                unsafe {
+                    Arc::from_raw(raw)
+                }
+            }
+
+            /// Stores a value into the pointer
+            ///
+            /// `store` takes an `Ordering` argument which describes 
+            /// the memory ordering of this operation. 
+            /// Possible values are `SeqCst`, `Release` and `Relaxed`.
+            ///
+            /// # Panics
+            /// 
+            /// Panics if `order` is `Acquire` or `AcqRel`.
+            pub fn store<P: Into<Arc<T>>>(&self, val: P, order: Ordering) {
+                let ptr: Arc<T> = val.into();
+                let new_data = Arc::into_raw(ptr) as usize;
+                self.data.store(new_data, order)
+            }
+
+            pub fn swap<P: Into<Arc<T>>>(&self, val: P, order: Ordering) -> Arc<T> {
+                let ptr: Arc<T> = val.into();
+                let new_data = Arc::into_raw(ptr) as usize;
+                let old_data = self.data.swap(new_data, order);
+                let raw = old_data as *const T;
+
+                // SAFETY: only raw Arc pointers will be stored in the pointer
+                unsafe {
+                    Arc::from_raw(raw)
+                }
+            }
+
+            pub fn compare_exchange(
+                &self,
+                current: impl Into<Arc<T>>,
+                new: impl Into<Arc<T>>,
+                success: Ordering,
+                failure: Ordering,
+            ) -> Result<Arc<T>, Arc<T>> {
+                let current: Arc<T> = current.into();
+                let current = Arc::into_raw(current) as usize;
+                let new: Arc<T> = new.into();
+                let new = Arc::into_raw(new) as usize;
+                self.data.compare_exchange(current, new, success, failure)
+                    .map(|success| {
+                        let raw = success as *const T;
+                        unsafe { Arc::from_raw(raw) }
+                    })
+                    .map_err(|failure| {
+                        let raw = failure as *const T;
+                        unsafe { Arc::from_raw(raw) }
+                    })
+            }
+
+            pub fn compare_exchange_weak(
+                &self,
+                current: impl Into<Arc<T>>,
+                new: impl Into<Arc<T>>,
+                success: Ordering,
+                failure: Ordering,
+            ) -> Result<Arc<T>, Arc<T>> {
+                let current: Arc<T> = current.into();
+                let current = Arc::into_raw(current) as usize;
+                let new: Arc<T> = new.into();
+                let new = Arc::into_raw(new) as usize;
+                self.data.compare_exchange_weak(current, new, success, failure)
+                    .map(|success| {
+                        let raw = success as *const T;
+                        unsafe{ Arc::from_raw(raw) }
+                    })
+                    .map_err(|failure| {
+                        let raw = failure as *const T;
+                        unsafe{ Arc::from_raw(raw) }
+                    })
+            }
+
+            /// Fetches the value, and applies a function to it that returns an optional
+            /// new value. Returns a `Result` of `Ok(previous_value)` if the function
+            /// returned `Some(_)`, else `Err(previous_value)`.
+            ///
+            /// Note: This may call the function multiple times if the value has been
+            /// changed from other threads in the meantime, as long as the function
+            /// returns `Some(_)`, but the function will have been applied only once to
+            /// the stored value.
+            ///
+            /// Note: This does not protect the program from the ABA problem. 
+            ///
+            /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
+            /// ordering of this operation. The first describes the required ordering for
+            /// when the operation finally succeeds while the second describes the
+            /// required ordering for loads. These correspond to the success and failure
+            /// orderings of [`AtomicPtr::compare_exchange`] respectively.
+            ///
+            /// Using [`Acquire`] as success ordering makes the store part of this
+            /// operation [`Relaxed`], and using [`Release`] makes the final successful
+            /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
+            /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
+            /// success ordering.
+            pub fn fetch_update<F>(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                mut f: F
+            ) -> Result<Arc<T>, Arc<T>>
+            where 
+                F: FnMut(&Arc<T>) -> Option<Arc<T>>
+            {
+                let mut prev = self.load(fetch_order);
+                while let Some(next) = f(&prev) {
+                    match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                        x @ Ok(_) => return x,
+                        Err(next_prev) => prev = next_prev,
+                    }
+                }
+                Err(prev)
+            }
+        }
     }
-
-    // /// Similar to the same function in `crossbeam_epoch::Atomic`
-    // pub fn fetch_and(
-    //     &self,
-    //     tag: usize,
-    //     order: Ordering
-    // ) -> TaggedArc<T> {
-    //     let mask = low_bits::<T>(); // ensure tag is bounded within the unused bits
-    //     let tag = tag | mask;
-    //     let val = tag | !mask;
-    //     let old = self.data.fetch_and(val, order);
-    //     unsafe {
-    //         TaggedArc::from_usize(old).clone()
-    //     }
-    // }
-
-    // /// Similar to the same function in `crossbeam_epoch::Atomic`
-    // pub fn fetch_or(
-    //     &self,
-    //     tag: usize,
-    //     order: Ordering
-    // ) -> TaggedArc<T> {
-    //     unimplemented!()
-    // }
-
-    // /// Similar to the same function in `crossbeam_epoch::Atomic`
-    // pub fn fetch_xor(
-    //     &self,
-    //     tag: usize,
-    //     order: Ordering
-    // ) -> TaggedArc<T> {
-    //     unimplemented!()
-    // }
 }
 
 impl<T> From<Arc<T>> for AtomicArc<T> {
@@ -379,6 +472,7 @@ impl<T> Clone for AtomicArc<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tag")]
     #[test]
     fn low_bits_of_arc() {
         let align = low_bits::<Arc<i8>>();
@@ -386,6 +480,7 @@ mod tests {
         assert_eq!(align, (1 << 8) - 1 );
     }
 
+    #[cfg(feature = "tag")]
     #[test]
     fn tag() {
         let ptr = Arc::new(1i32);
