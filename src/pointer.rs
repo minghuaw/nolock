@@ -36,6 +36,7 @@ cfg_if! {
             (data & !low_bits::<T>(), data & low_bits::<T>())
         }
 
+        /// Arc pointer that uses the lower unused bits for tagging
         pub struct TaggedArc<T: ?Sized> {
             data: usize,
             _marker: PhantomData<T>
@@ -115,6 +116,8 @@ cfg_if! {
             }
         
             pub fn with_tag(&self, tag: usize) -> Self {
+                // `compose_tag` will take care of removing any old tag
+                // that is already with the current self.data
                 let data = compose_tag::<T>(self.data, tag);
                 Self {
                     data,
@@ -143,7 +146,6 @@ cfg_if! {
                 TaggedArc::compose(new, tag)
             }
         }
-        
     }
 }
 
@@ -205,9 +207,9 @@ cfg_if!{
             /// Panics if `order` is `Release` or `AcqRel`.
             pub fn load(&self, order: Ordering) -> TaggedArc<T> {
                 let data = self.data.load(order);
-                unsafe {
-                    TaggedArc::from_usize(data)
-                }
+                let ptr = unsafe { TaggedArc::from_usize(data) };
+                // clone because load does not give away ownership
+                TaggedArc::clone(&ptr)
             }
 
             /// Stores a value into the pointer
@@ -231,9 +233,7 @@ cfg_if!{
                 let old_data = self.data.swap(new_data, order);
                 
                 // SAFETY: only raw Arc pointers will be stored in the pointer
-                unsafe {
-                    TaggedArc::from_usize(old_data)
-                }
+                unsafe { TaggedArc::from_usize(old_data) }
             }   
 
             pub fn compare_exchange(
@@ -331,9 +331,9 @@ cfg_if!{
             pub fn load(&self, order: Ordering) -> Arc<T> {
                 let data = self.data.load(order);
                 let raw = data as *const T;
-                unsafe {
-                    Arc::from_raw(raw)
-                }
+                let ptr = unsafe { Arc::from_raw(raw) };
+                // clone because load doesn't give away ownership
+                Arc::clone(&ptr)
             }
 
             /// Stores a value into the pointer
@@ -358,9 +358,7 @@ cfg_if!{
                 let raw = old_data as *const T;
 
                 // SAFETY: only raw Arc pointers will be stored in the pointer
-                unsafe {
-                    Arc::from_raw(raw)
-                }
+                unsafe { Arc::from_raw(raw) }
             }
 
             pub fn compare_exchange(
