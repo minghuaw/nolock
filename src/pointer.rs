@@ -37,13 +37,13 @@ cfg_if! {
         }
 
         /// Arc pointer that uses the lower unused bits for tagging
-        pub struct TaggedArc<T: ?Sized> {
+        pub struct TaggedArc<T> {
             data: usize,
             _marker: PhantomData<T>
         }
         
-        unsafe impl<T: ?Sized + Sync + Send> Send for TaggedArc<T> {}
-        unsafe impl<T: ?Sized + Sync + Send> Sync for TaggedArc<T> {}
+        unsafe impl<T: Sync + Send> Send for TaggedArc<T> {}
+        unsafe impl<T: Sync + Send> Sync for TaggedArc<T> {}
         
         impl<T> TaggedArc<T> {
             pub fn new(val: impl Into<Arc<T>>) -> Self {
@@ -144,6 +144,14 @@ cfg_if! {
                 let (ptr, tag) = Self::decompose(self);
                 let new = Arc::clone(&ptr);
                 TaggedArc::compose(new, tag)
+            }
+        }
+
+        impl<T> Drop for TaggedArc<T> {
+            fn drop(&mut self) {
+                let (ptr, _) = Self::decompose(self);
+                // manually call drop on Arc ptr
+                drop(ptr);
             }
         }
     }
