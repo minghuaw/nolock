@@ -1,10 +1,7 @@
-use std::{intrinsics::transmute, mem::transmute_copy, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{mem::transmute, mem::transmute_copy, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use cfg_if::cfg_if;
-
-#[cfg(feature = "tag")]
-use std::mem::{transmute, transmute_copy};
 
 use super::{Atomic};
 
@@ -114,7 +111,7 @@ cfg_if!{
                 // let old_data = self.data.swap(new_data, order);
                 
                 // SAFETY: only raw Arc pointers will be stored in the pointer
-                let old_data = unsafe {
+                unsafe {
                     let old_data = transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
                         .swap(new_data, order);
                     TaggedArc::from_usize(old_data)
