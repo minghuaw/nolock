@@ -1,8 +1,5 @@
 use std::sync::atomic::Ordering;
 
-#[cfg(feature = "tag")]
-use super::TaggedArc;
-
 pub trait Atomic {
     type Elem;
 
