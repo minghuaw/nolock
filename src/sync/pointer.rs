@@ -1,4 +1,4 @@
-use std::{mem::transmute, mem::transmute_copy, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{mem::transmute, mem::transmute_copy, ptr::NonNull, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
@@ -14,8 +14,7 @@ use super::TaggedArc;
 pub struct AtomicArc<T> {
     // data is a usize that contains a pointer and a tag if `feature = "tag"`is enabled. 
     // The tag resides on the unused lower bits.
-    data: NonZeroUsize,
-    _marker: PhantomData<T>,
+    data: NonNull<T>,
 }
 
 unsafe impl<T: Sync + Send> Send for AtomicArc<T> {}
@@ -28,11 +27,10 @@ impl<T> AtomicArc<T> {
     }
 
     pub fn from_arc(val: Arc<T>) -> Self {
-        let data = Arc::into_raw(val) as usize;
-        let data = unsafe { NonZeroUsize::new_unchecked(data) };
+        let raw = Arc::into_raw(val) as *mut T;
+        let data = unsafe { NonNull::new_unchecked(raw)};
         Self {
             data,
-            _marker: PhantomData
         }
     }
 
@@ -41,7 +39,6 @@ impl<T> AtomicArc<T> {
         let data = tagged.data;
         Self {
             data,
-            _marker: PhantomData,
         }
     }
 
@@ -49,8 +46,7 @@ impl<T> AtomicArc<T> {
     pub unsafe fn from_usize(val: usize) -> Option<Self> {
         let data = NonZeroUsize::new(val)?;
         let ret = Self {
-            data,
-            _marker: PhantomData
+            data: unsafe { transmute(data) }
         };
         Some(ret)
     }
@@ -75,7 +71,7 @@ impl<T> Atomic for AtomicArc<T> {
     /// Panics if `order` is `Release` or `AcqRel`.
     fn load(&self, order: Ordering) -> TaggedArc<T> {
         let ptr = unsafe {
-            let addr = transmute_copy::<NonZeroUsize, AtomicUsize>(&self.data)
+            let addr = transmute_copy::<NonNull<T>, AtomicUsize>(&self.data)
                 .load(order);
             TaggedArc::from_usize(addr)
                 .expect("AtomicArc pointer must be non-zero")
@@ -98,7 +94,7 @@ impl<T> Atomic for AtomicArc<T> {
         let new_data = ptr.into_usize();
         // self.data.store(new_data, order)
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .store(new_data, order)
         }
     }
@@ -115,7 +111,7 @@ impl<T> Atomic for AtomicArc<T> {
         
         // SAFETY: only raw Arc pointers will be stored in the pointer
         unsafe {
-            let old_data = transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            let old_data = transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .swap(new_data, order);
             TaggedArc::from_usize(old_data)
                 .expect("AtomicArc pointer must be non-zero")
@@ -150,7 +146,7 @@ impl<T> Atomic for AtomicArc<T> {
 
         // SAFETY: The stored address must come from a valid Arc pointer
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .compare_exchange(current, new, success, failure)
                 .map(|ok| {
                     TaggedArc::from_usize(ok)
@@ -198,7 +194,7 @@ impl<T> Atomic for AtomicArc<T> {
         //     })
 
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .compare_exchange_weak(current, new, success, failure)
                 .map(|ok| {
                     TaggedArc::from_usize(ok)

@@ -1,4 +1,4 @@
-use std::mem;
+use std::{intrinsics::transmute, mem, ptr::NonNull, usize};
 use std::borrow::Borrow;
 use std::num::NonZeroUsize;
 use std::marker::PhantomData;
@@ -35,8 +35,8 @@ pub(crate) fn decompose_tag<T>(data: usize) -> (usize, usize) {
 
 /// Arc pointer that uses the lower unused bits for tagging
 pub struct TaggedArc<T> {
-    pub(crate) data: NonZeroUsize,
-    _marker: PhantomData<T>
+    // data is a tagged pointer
+    pub(crate) data: NonNull<T>,
 }
 
 unsafe impl<T: Sync + Send> Send for TaggedArc<T> {}
@@ -53,22 +53,19 @@ impl<T> TaggedArc<T> {
         let raw = Arc::into_raw(ptr) as usize;
         let data = compose_tag::<T>(raw, tag);
         // SAFETY: data is composed from a valid pointer addr and tag
-        let data = unsafe { NonZeroUsize::new_unchecked(data) };
+        let data = unsafe { NonNull::new_unchecked(data as *mut T) };
         Self {
             data,
-            _marker: PhantomData,
         }
     }
 
     pub fn from_arc(val: Arc<T>) -> Self {
-        let data = Arc::into_raw(val) as usize;
+        let raw = Arc::into_raw(val) as *mut T;
 
         // SAFETY: pointer address obtained from a valid Arc pointer
-        let data = unsafe { NonZeroUsize::new_unchecked(data) };
-        
+        let data = unsafe { NonNull::new_unchecked(raw)};
         Self {
             data,
-            _marker: PhantomData
         }
     }
 
@@ -79,7 +76,10 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn decompose(ptr: TaggedArc<T>) -> (Arc<T>, usize) {
-        let (data, tag) = decompose_tag::<T>(ptr.borrow().data.get());
+        let (data, tag) = decompose_tag::<T>(
+            // SAFETY: only valid pointers will be stored
+            unsafe { transmute::<NonNull<T>, usize>(ptr.data) }    
+        );
         let ptr = data as *const T;
         unsafe {
             (Arc::from_raw(ptr), tag)
@@ -87,7 +87,9 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn into_usize(self) -> usize {
-        self.data.get()
+        unsafe {
+            transmute(self.data)
+        }
     }
 
     /// # Safety
@@ -96,14 +98,17 @@ impl<T> TaggedArc<T> {
     pub unsafe fn from_usize(data: usize) -> Option<Self> {
         let data = NonZeroUsize::new(data)?;
         let ret = Self {
-            data,
-            _marker: PhantomData
+            data: unsafe {
+                transmute(data)
+            }
         };
         Some(ret)
     }
 
     pub fn as_raw(&self) -> *const T {
-        let (data, _) = decompose_tag::<T>(self.data.get());
+        let (data, _) = decompose_tag::<T>(
+            unsafe { transmute::<NonNull<T>, usize>(self.data) }
+        );
         data as *const T
     }
 
@@ -117,20 +122,24 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn tag(&self) -> usize {
-        let (_, tag) = decompose_tag::<T>(self.data.get());
+        let (_, tag) = decompose_tag::<T>(
+            unsafe { transmute::<NonNull<T>, usize>(self.data) }
+        );
         tag
     }
 
     pub fn with_tag(&self, tag: usize) -> Self {
         // `compose_tag` will take care of removing any old tag
         // that is already with the current self.data
-        let data = compose_tag::<T>(self.data.get(), tag);
+        let data = compose_tag::<T>(
+            unsafe { transmute(self.data) }, 
+            tag
+        );
 
         // SAFETY: `self.data` is already `NonZeroUsize`
-        let data = unsafe { NonZeroUsize::new_unchecked(data) };
+        let data = unsafe { NonNull::new_unchecked(data as *mut T) };
         Self {
             data,
-            _marker: PhantomData
         }
     }
 }
@@ -149,7 +158,9 @@ impl<T> From<TaggedArc<T>> for Arc<T> {
 
 impl<T> Clone for TaggedArc<T> {
     fn clone(&self) -> Self {
-        let (data, tag) = decompose_tag::<T>(self.data.get());
+        let (data, tag) = decompose_tag::<T>(
+            unsafe { transmute::<NonNull<T>, usize>(self.data) }
+        );
         let ptr = unsafe { Arc::from_raw(data as *const T) };
         let new = Arc::clone(&ptr);
         TaggedArc::new(new)
@@ -308,18 +319,19 @@ mod tests {
     fn test_compose_decompose_step_by_step() {
         let ptr = Arc::new(13);
         println!("[1] {:p}", ptr);
-        let raw = Arc::into_raw(ptr);
-        let data = raw as usize;
+        // let raw = Arc::into_raw(ptr);
+        // let data = raw as usize;
         let tag = 0x01;
         
         // compose tag
-        let mask = low_bits::<Arc<i32>>();
+        // let mask = low_bits::<Arc<i32>>();
         // println!("{:?}", mask);
         // let comp = data & !mask;
         // println!("[2] 0x{:x}", &comp);
         // let comp = comp | (tag & mask);
-        let comp = compose_tag::<Arc<i32>>(data, tag);
-        println!("[3] 0x{:x}", &comp);
+        // let comp = compose_tag::<Arc<i32>>(data, tag);
+        let comp = TaggedArc::compose(ptr.clone(), tag);
+        println!("[3] 0x{:p}", &comp);
 
         // PROBLEM: two Arcs are constructed and one of them will
         // have problem dropping
@@ -335,22 +347,25 @@ mod tests {
         // decompose
         // let data2 = comp & !mask;
         // let tag2 = comp & mask;
-        let (data2, tag2) = decompose_tag::<Arc<i32>>(comp);
+        // let (data2, tag2) = decompose_tag::<Arc<i32>>(comp);
+        let (ptr2, tag2) = TaggedArc::decompose(comp);
+        let data2 = Arc::into_raw(ptr2) as usize;
         println!("[6] 0x{:x}", data2);
         println!("[7] 0x{:x}", tag2);
         let raw2 = data2 as *const i32;
 
-        unsafe {
+        let ptr2 = unsafe {
             // cast to Arc from decomposed pointers
-            let ptr2 = Arc::from_raw(raw2);
-            println!("[8] {:p}", ptr2);
-            println!("[9] {:?}", ptr2);
-        }
+            Arc::from_raw(raw2)
+        };
+        println!("[8] {:p}", ptr2);
+        println!("[9] {:?}", ptr2);
 
         // error probably occured during dropping? No
         // drop(ptr);
 
-        println!("[end] hahahah");
+        assert_eq!(ptr, ptr2);
+        assert_eq!(tag, tag2);
     }
 
     #[test]
