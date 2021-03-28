@@ -184,29 +184,6 @@ mod tests {
     struct Wrapper {
         pub inner: NonZeroUsize
     }
-
-    // #[derive(Debug)]
-    // enum AnotherOption<T> {
-    //     Some(T),
-    //     None
-    // }
-
-    // impl AnotherOption<Wrapper> {
-    //     fn transmute_copy_and_atomic(&self) {
-    //         let opt = AnotherOption::Some(
-    //             Wrapper {
-    //                 inner: NonZeroUsize::new(13).unwrap()
-    //             }
-    //         );
-    //         println!("[1] opt was originally: {:?}", &opt);
-
-    //         unsafe {
-    //             transmute::<&AnotherOption<Wrapper>, &AtomicUsize>(self)
-    //                 .swap(0, Ordering::Relaxed);
-    //         }
-    //         println!("[2] opt becomes {:?}", &opt);
-    //     }
-    // }
     
     #[test]
     fn test_transmute_ref_option() {

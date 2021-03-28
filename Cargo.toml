@@ -11,4 +11,4 @@ default = ["tag"]
 tag = []
 
 [dependencies]
-cfg-if = "1.0.0"
+
