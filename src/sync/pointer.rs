@@ -9,7 +9,12 @@ use super::{Atomic};
 use super::TaggedArc;
 
 /// A wrapper that change all API to only accept and return `Arc` and allows tagging
+///
+/// If `feature = "tag"` is enabled, the tag will be stored in the unused lower bits 
+/// of the pointer address.
 pub struct AtomicArc<T> {
+    // data is a usize that contains a pointer and a tag if `feature = "tag"`is enabled. 
+    // The tag resides on the unused lower bits.
     data: NonZeroUsize,
     _marker: PhantomData<T>,
 }
@@ -445,8 +450,17 @@ impl<T> Clone for AtomicArc<T> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test() {
+    use super::*;
 
+    #[test]
+    fn test_transmute_nonzerousize_to_atomicusize() {
+        let nz = NonZeroUsize::new(13).unwrap();
+        println!("[1] nz was originally: {:?}", &nz);
+        unsafe {
+            let ret = transmute_copy::<NonZeroUsize, AtomicUsize>(&nz)
+                .swap(15, Ordering::Relaxed);
+            println!("[2] returned by swap: {:?}", ret);
+        }
+        println!("[3] nz becomes: {:?}", nz);
     }
 }
