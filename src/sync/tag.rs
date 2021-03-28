@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
 #[inline]
 fn low_bits<T>() -> usize {
-    (1 << mem::align_of::<T>()) - 1
+    (1 << mem::align_of::<T>().trailing_zeros()) - 1
 }
 
 // /// Panics if the pointer is not properly unaligned.
@@ -21,14 +21,16 @@ fn low_bits<T>() -> usize {
 ///
 /// `tag` is truncated to fit into the unused bits of the pointer to `T`.
 #[inline]
-fn compose_tag<T>(data: usize, tag: usize) -> usize {
-    (data & !low_bits::<T>()) | (tag & low_bits::<T>())
+pub(crate) fn compose_tag<T>(data: usize, tag: usize) -> usize {
+    let mask = low_bits::<T>();
+    (data & !mask) | (tag & mask)
 }
 
 /// Decomposes a tagged pointer `data` into the pointer and the tag.
 #[inline]
-fn decompose_tag<T>(data: usize) -> (usize, usize) {
-    (data & !low_bits::<T>(), data & low_bits::<T>())
+pub(crate) fn decompose_tag<T>(data: usize) -> (usize, usize) {
+    let mask = low_bits::<T>();
+    (data & !mask, data & mask)
 }
 
 /// Arc pointer that uses the lower unused bits for tagging
@@ -72,11 +74,11 @@ impl<T> TaggedArc<T> {
 
     pub fn into_arc(self) -> Arc<T> {
         // remove tag information
-        let (ptr, _) = Self::decompose(self);
-        ptr
+        let (data, _) = decompose_tag::<Arc<T>>(self.into_usize());
+        unsafe { Arc::from_raw(data as *const T) }
     }
 
-    pub fn decompose(ptr: impl Borrow<TaggedArc<T>>) -> (Arc<T>, usize) {
+    pub fn decompose(ptr: TaggedArc<T>) -> (Arc<T>, usize) {
         let (data, tag) = decompose_tag::<T>(ptr.borrow().data.get());
         let ptr = data as *const T;
         unsafe {
@@ -110,8 +112,8 @@ impl<T> TaggedArc<T> {
         Self::from_usize(data)
     }
 
-    pub fn into_raw(self) -> *const T {
-        self.as_raw()
+    pub fn into_raw(ptr: TaggedArc<T>) -> *const T {
+        ptr.as_raw()
     }
 
     pub fn tag(&self) -> usize {
@@ -147,23 +149,31 @@ impl<T> From<TaggedArc<T>> for Arc<T> {
 
 impl<T> Clone for TaggedArc<T> {
     fn clone(&self) -> Self {
-        // let (raw, tag) = decompose_tag::<T>(self.data);
-        let (ptr, tag) = Self::decompose(self);
+        let (data, tag) = decompose_tag::<T>(self.data.get());
+        let ptr = unsafe { Arc::from_raw(data as *const T) };
         let new = Arc::clone(&ptr);
-        TaggedArc::compose(new, tag)
+        TaggedArc::new(new)
+            .with_tag(tag)
     }
 }
 
-impl<T> Drop for TaggedArc<T> {
-    fn drop(&mut self) {
-        let (ptr, _) = Self::decompose(self);
-        // manually call drop on Arc ptr
-        drop(ptr);
-    }
-}
+
+
+// impl<T> Drop for TaggedArc<T> {
+//     fn drop(&mut self) {
+//         let (data, _) = decompose_tag::<T>(self.data.get());
+//         // ERROR: this will incur memory SIGSEV
+//         let ptr = unsafe { Arc::from_raw(data as *const T) };        // manually call drop on Arc ptr
+//         drop(ptr);
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
+    #![allow(dead_code, unused_imports)]
+    use std::{mem::{size_of_val, transmute}, ptr::NonNull, sync::atomic::AtomicUsize};
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     #[test]
@@ -209,7 +219,7 @@ mod tests {
     fn low_bits_of_arc() {
         let align = low_bits::<Arc<&str>>();
         println!("{:b}", &align);
-        assert_eq!(align, (1 << 8) - 1 );
+        assert_eq!(align, (1 << 3) - 1 );
     }
 
     #[cfg(feature = "tag")]
@@ -226,23 +236,135 @@ mod tests {
         println!("tagged: 0x{:x}", &tagged);
         println!("raw1: 0x{:x}", &raw1);
         println!("tag1: 0x{:x}", &tag1);
-        // assert_eq!(raw, raw1);
-        // assert_eq!(tag, tag1);
+        assert_eq!(raw, raw1);
+        assert_eq!(tag, tag1);
     }
 
     #[cfg(feature = "tag")]
     #[test]
     fn compose_and_decompose() {
-        let ptr = Arc::new(Box::new(3));
+        let ptr = Arc::new(3);
+        // let raw = Arc::into_raw(ptr);
         println!("{:p}", ptr);
         let tag = 0x01;
-        let comp = TaggedArc::compose(ptr, tag);
+        let comp = TaggedArc::from_arc(ptr).with_tag(tag);
         let (out_ptr, out_tag) = TaggedArc::decompose(comp);
+        // let (out_ptr, out_tag) = decompose_tag::<Box<i32>>(comp.data.get());
+        println!("{:?}", out_ptr);
+        // PANIC: This will panic because converting back from usize will make the pointer no longer valid 
+        // for Arc
+        // drop(comp);
+        // let out_ptr = unsafe {
+        //     Arc::from_raw(out_ptr as *const i32).clone()
+        // };
+        // let out_ptr = comp.into_arc();
 
         println!("{:p}", out_ptr);
         println!("{:?}", out_ptr);
-        println!("{:?}", out_tag);
+        // println!("{:?}", out_tag);
         // assert_eq!(ptr, out_ptr);
         // assert_eq!(tag, out_tag);
+    }
+
+    #[test]
+    fn arc_into_and_from_raw() {
+        let ptr = Arc::new(3);
+        let raw = Arc::into_raw(ptr);
+        // let raw = NonZeroUsize::new(raw as usize).unwrap();
+        unsafe {
+            // let prev = transmute::<&NonZeroUsize, &AtomicUsize>(&raw)
+            //     .fetch_add(1, Ordering::Relaxed);
+            // println!("0x{:x}", prev);
+
+            // let prev = transmute::<&NonZeroUsize, &AtomicUsize>(&raw)
+            //     .fetch_sub(1, Ordering::Relaxed);
+            // println!("0x{:x}", prev);
+
+            let mut a = 1;
+            println!("{:p}", &a);
+            a = a + 1;
+            println!("{:p}", &a);            
+
+            // let raw2 = transmute::<&AtomicUsize, &*const i32>(&data);
+            // let raw2 = transmute::<usize, *const i32>(*data2);
+            // let mask: usize = 0b111;
+            let mask = low_bits::<Arc<i32>>();
+            let tag = 0x01;
+            let data = raw as usize;
+            let data = data & !mask;
+            let data = data | (tag & mask);
+            // println!("{:?}", data);
+            let data = data & !mask;
+            // println!("{:?}", data);
+            let raw = data as *const i32;
+
+            // let ptr2 = Arc::from_raw(transmute::<NonZeroUsize, *mut i32>(raw));
+            let ptr2 = Arc::from_raw(raw);
+            println!("{:?}" , ptr2);
+        }
+    }
+
+    #[test]
+    fn test_compose_decompose_step_by_step() {
+        let ptr = Arc::new(13);
+        println!("[1] {:p}", ptr);
+        let raw = Arc::into_raw(ptr);
+        let data = raw as usize;
+        let tag = 0x01;
+        
+        // compose tag
+        let mask = low_bits::<Arc<i32>>();
+        // println!("{:?}", mask);
+        // let comp = data & !mask;
+        // println!("[2] 0x{:x}", &comp);
+        // let comp = comp | (tag & mask);
+        let comp = compose_tag::<Arc<i32>>(data, tag);
+        println!("[3] 0x{:x}", &comp);
+
+        // PROBLEM: two Arcs are constructed and one of them will
+        // have problem dropping
+        //
+        // first try saving as an Arc
+        // let _ptr = unsafe {
+        //     Arc::from_raw(comp as *const i32)
+        // };
+        // println!("[4] {:p}", _ptr);
+        // println!("[5] {:?} (Wrong value is expected)", _ptr);
+        // drop(_ptr);
+
+        // decompose
+        // let data2 = comp & !mask;
+        // let tag2 = comp & mask;
+        let (data2, tag2) = decompose_tag::<Arc<i32>>(comp);
+        println!("[6] 0x{:x}", data2);
+        println!("[7] 0x{:x}", tag2);
+        let raw2 = data2 as *const i32;
+
+        unsafe {
+            // cast to Arc from decomposed pointers
+            let ptr2 = Arc::from_raw(raw2);
+            println!("[8] {:p}", ptr2);
+            println!("[9] {:?}", ptr2);
+        }
+
+        // error probably occured during dropping? No
+        // drop(ptr);
+
+        println!("[end] hahahah");
+    }
+
+    #[test]
+    fn test_size_of_ptrs() {
+        let val = "12313231312321";
+        let arc_ptr = Arc::new(val.clone());
+        let box_ptr = Box::new(val.clone());
+        
+        println!("size(Arc) {:?}", size_of_val(&arc_ptr));
+        println!("size(Box) {:?}", size_of_val(&box_ptr));
+        
+        let raw_arc = Arc::into_raw(arc_ptr);
+        let raw_box = Box::into_raw(box_ptr);
+        println!("size(raw Arc) {:?}", size_of_val(&raw_arc));
+        println!("size(raw Box) {:?}", size_of_val(&raw_box));
     }
 }

@@ -184,6 +184,14 @@ mod tests {
     struct Wrapper {
         pub inner: NonZeroUsize
     }
+
+    struct ArcWrapper<T>(Arc<T>);
+
+    #[test]
+    fn size_of_option_wrapper_arc() {
+        let size = size_of::<ArcWrapper<&str>>();
+        println!("{:?}", size);
+    }
     
     #[test]
     fn test_transmute_ref_option() {
