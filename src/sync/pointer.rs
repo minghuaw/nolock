@@ -264,7 +264,7 @@ impl<T> Atomic for AtomicArc<T> {
     /// Panics if `order` is `Release` or `AcqRel`.
     fn load(&self, order: Ordering) -> Arc<T> {
         let ptr = unsafe {
-            let addr = transmute_copy::<NonZeroUsize, AtomicUsize>(&self.data)
+            let addr = transmute_copy::<NonNull<T>, AtomicUsize>(&self.data)
                 .load(order);
             Arc::from_raw(addr as *const T)
         };
@@ -285,7 +285,7 @@ impl<T> Atomic for AtomicArc<T> {
         let ptr: Arc<T> = val.into();
         let new_data = Arc::into_raw(ptr) as usize;
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .store(new_data, order)
         }
     }
@@ -300,7 +300,7 @@ impl<T> Atomic for AtomicArc<T> {
         let new_data = Arc::into_raw(ptr) as usize;
         // SAFETY: only raw Arc pointers will be stored in the pointer
         unsafe {
-            let old_data = transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            let old_data = transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .swap(new_data, order);
             Arc::from_raw(old_data as *const T)
         }
@@ -332,7 +332,7 @@ impl<T> Atomic for AtomicArc<T> {
         let new = Arc::into_raw(new) as usize;
 
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .compare_exchange(current, new, success, failure)
                 .map(|ok| {
                     Arc::from_raw(ok as *const T)
@@ -370,7 +370,7 @@ impl<T> Atomic for AtomicArc<T> {
         let new: Arc<T> = new.into();
         let new = Arc::into_raw(new) as usize;
         unsafe {
-            transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+            transmute::<&NonNull<T>, &AtomicUsize>(&self.data)
                 .compare_exchange_weak(current, new, success, failure)
                 .map(|ok| {
                     Arc::from_raw(ok as *const T)
