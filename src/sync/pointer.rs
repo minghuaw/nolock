@@ -1,4 +1,4 @@
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{intrinsics::transmute, mem::transmute_copy, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use cfg_if::cfg_if;
@@ -6,7 +6,10 @@ use cfg_if::cfg_if;
 #[cfg(feature = "tag")]
 use std::mem::{transmute, transmute_copy};
 
-use super::{TaggedArc};
+use super::{Atomic};
+
+#[cfg(feature = "tag")]
+use super::TaggedArc;
 
 /// A wrapper that change all API to only accept and return `Arc` and allows tagging
 pub struct AtomicArc<T> {
@@ -58,7 +61,9 @@ impl<T> AtomicArc<T> {
 
 cfg_if!{
     if #[cfg(feature = "tag")] {
-        impl<T> AtomicArc<T> {
+        impl<T> Atomic for AtomicArc<T> {
+            type Elem = TaggedArc<T>;
+
             /// Loads a value from the atomic pointer.
             ///
             /// `load` takes an `Ordering` argument which describes 
@@ -68,14 +73,14 @@ cfg_if!{
             /// # Panics
             /// 
             /// Panics if `order` is `Release` or `AcqRel`.
-            pub fn load(&self, order: Ordering) -> TaggedArc<T> {
+            fn load(&self, order: Ordering) -> TaggedArc<T> {
                 let ptr = unsafe {
                     let addr = transmute_copy::<NonZeroUsize, AtomicUsize>(&self.data)
                         .load(order);
                     TaggedArc::from_usize(addr)
                         .expect("AtomicArc pointer must be non-zero")
                 };
-                // clone because load does not give away ownership
+                // clone because `load` does not give away ownership
                 TaggedArc::clone(&ptr)
             }
 
@@ -88,7 +93,7 @@ cfg_if!{
             /// # Panics
             /// 
             /// Panics if `order` is `Acquire` or `AcqRel`.
-            pub fn store<P: Into<TaggedArc<T>>>(&self, val: P, order: Ordering) {
+            fn store(&self, val: impl Into<TaggedArc<T>>, order: Ordering) {
                 let ptr: TaggedArc<T> = val.into();
                 let new_data = ptr.into_usize();
                 // self.data.store(new_data, order)
@@ -103,17 +108,15 @@ cfg_if!{
             /// swap takes an `Ordering` argument which describes the memory ordering of this operation. 
             /// All ordering modes are possible. Note that using `Acquire` makes the store part of this 
             /// operation `Relaxed`, and using `Release` makes the load part `Relaxed`.            
-            pub fn swap(&self, val: impl Into<TaggedArc<T>>, order: Ordering) -> TaggedArc<T> {
+            fn swap(&self, val: impl Into<TaggedArc<T>>, order: Ordering) -> TaggedArc<T> {
                 let ptr: TaggedArc<T> = val.into();
                 let new_data = ptr.into_usize();
                 // let old_data = self.data.swap(new_data, order);
-                let old_data = unsafe {
-                    transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
-                        .swap(new_data, order)
-                };
                 
                 // SAFETY: only raw Arc pointers will be stored in the pointer
-                unsafe { 
+                let old_data = unsafe {
+                    let old_data = transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+                        .swap(new_data, order);
                     TaggedArc::from_usize(old_data)
                         .expect("AtomicArc pointer must be non-zero")
                 }
@@ -133,7 +136,7 @@ cfg_if!{
             /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
             /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
             /// and must be equivalent to or weaker than the success ordering.
-            pub fn compare_exchange(
+            fn compare_exchange(
                 &self,
                 current: impl Into<TaggedArc<T>>,
                 new: impl Into<TaggedArc<T>>,
@@ -175,7 +178,7 @@ cfg_if!{
             /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
             /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
             /// and must be equivalent to or weaker than the success ordering.
-            pub fn compare_exchange_weak(
+            fn compare_exchange_weak(
                 &self,
                 current: impl Into<TaggedArc<T>>,
                 new: impl Into<TaggedArc<T>>,
@@ -208,49 +211,51 @@ cfg_if!{
                 }
             }
 
-            /// Fetches the value, and applies a function to it that returns an optional
-            /// new value. Returns a `Result` of `Ok(previous_value)` if the function
-            /// returned `Some(_)`, else `Err(previous_value)`.
-            ///
-            /// Note: This may call the function multiple times if the value has been
-            /// changed from other threads in the meantime, as long as the function
-            /// returns `Some(_)`, but the function will have been applied only once to
-            /// the stored value.
-            ///
-            /// Note: This does not protect the program from the ABA problem. 
-            ///
-            /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
-            /// ordering of this operation. The first describes the required ordering for
-            /// when the operation finally succeeds while the second describes the
-            /// required ordering for loads. These correspond to the success and failure
-            /// orderings of [`AtomicPtr::compare_exchange`] respectively.
-            ///
-            /// Using [`Acquire`] as success ordering makes the store part of this
-            /// operation [`Relaxed`], and using [`Release`] makes the final successful
-            /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
-            /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
-            /// success ordering.
-            pub fn fetch_update<F>(
-                &self,
-                set_order: Ordering,
-                fetch_order: Ordering,
-                mut f: F
-            ) -> Result<TaggedArc<T>, TaggedArc<T>>
-            where 
-                F: FnMut(&TaggedArc<T>) -> Option<TaggedArc<T>>
-            {
-                let mut prev = self.load(fetch_order);
-                while let Some(next) = f(&prev) {
-                    match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
-                        x @ Ok(_) => return x,
-                        Err(next_prev) => prev = next_prev,
-                    }
-                }
-                Err(prev)
-            }
+            // /// Fetches the value, and applies a function to it that returns an optional
+            // /// new value. Returns a `Result` of `Ok(previous_value)` if the function
+            // /// returned `Some(_)`, else `Err(previous_value)`.
+            // ///
+            // /// Note: This may call the function multiple times if the value has been
+            // /// changed from other threads in the meantime, as long as the function
+            // /// returns `Some(_)`, but the function will have been applied only once to
+            // /// the stored value.
+            // ///
+            // /// Note: This does not protect the program from the ABA problem. 
+            // ///
+            // /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
+            // /// ordering of this operation. The first describes the required ordering for
+            // /// when the operation finally succeeds while the second describes the
+            // /// required ordering for loads. These correspond to the success and failure
+            // /// orderings of [`AtomicPtr::compare_exchange`] respectively.
+            // ///
+            // /// Using [`Acquire`] as success ordering makes the store part of this
+            // /// operation [`Relaxed`], and using [`Release`] makes the final successful
+            // /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
+            // /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
+            // /// success ordering.
+            // fn fetch_update<F>(
+            //     &self,
+            //     set_order: Ordering,
+            //     fetch_order: Ordering,
+            //     mut f: F
+            // ) -> Result<TaggedArc<T>, TaggedArc<T>>
+            // where 
+            //     F: FnMut(&TaggedArc<T>) -> Option<TaggedArc<T>>
+            // {
+            //     let mut prev = self.load(fetch_order);
+            //     while let Some(next) = f(&prev) {
+            //         match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+            //             x @ Ok(_) => return x,
+            //             Err(next_prev) => prev = next_prev,
+            //         }
+            //     }
+            //     Err(prev)
+            // }
         }
      } else {
-        impl<T> AtomicArc<T> {
+        impl<T> Atomic for AtomicArc<T> {
+            type Elem = Arc<T>;
+
             /// Loads a value from the atomic pointer.
             ///
             /// `load` takes an `Ordering` argument which describes 
@@ -260,11 +265,13 @@ cfg_if!{
             /// # Panics
             /// 
             /// Panics if `order` is `Release` or `AcqRel`.
-            pub fn load(&self, order: Ordering) -> Arc<T> {
-                let data = self.data.load(order);
-                let raw = data as *const T;
-                let ptr = unsafe { Arc::from_raw(raw) };
-                // clone because load doesn't give away ownership
+            fn load(&self, order: Ordering) -> Arc<T> {
+                let ptr = unsafe {
+                    let addr = transmute_copy::<NonZeroUsize, AtomicUsize>(&self.data)
+                        .load(order);
+                    Arc::from_raw(addr as *const T)
+                };
+                // clone because `load` doesn't give away ownership
                 Arc::clone(&ptr)
             }
 
@@ -277,10 +284,13 @@ cfg_if!{
             /// # Panics
             /// 
             /// Panics if `order` is `Acquire` or `AcqRel`.
-            pub fn store<P: Into<Arc<T>>>(&self, val: P, order: Ordering) {
+            fn store(&self, val: impl Into<Arc<T>>, order: Ordering) {
                 let ptr: Arc<T> = val.into();
                 let new_data = Arc::into_raw(ptr) as usize;
-                self.data.store(new_data, order)
+                unsafe {
+                    transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+                        .store(new_data, order)
+                }
             }
 
             /// Stores a `Arc` pointer into the atomic pointer, returning the previously stored pointer
@@ -288,14 +298,15 @@ cfg_if!{
             /// swap takes an `Ordering` argument which describes the memory ordering of this operation. 
             /// All ordering modes are possible. Note that using `Acquire` makes the store part of this 
             /// operation `Relaxed`, and using `Release` makes the load part `Relaxed`.
-            pub fn swap<P: Into<Arc<T>>>(&self, val: P, order: Ordering) -> Arc<T> {
+            fn swap(&self, val: impl Into<Arc<T>>, order: Ordering) -> Arc<T> {
                 let ptr: Arc<T> = val.into();
                 let new_data = Arc::into_raw(ptr) as usize;
-                let old_data = self.data.swap(new_data, order);
-                let raw = old_data as *const T;
-
                 // SAFETY: only raw Arc pointers will be stored in the pointer
-                unsafe { Arc::from_raw(raw) }
+                unsafe {
+                    let old_data = transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+                        .swap(new_data, order);
+                    Arc::from_raw(old_data as *const T)
+                }
             }
 
             /// Stores a `Arc` pointer into the if the current value is the same as the `current` value.
@@ -311,7 +322,7 @@ cfg_if!{
             /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
             /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
             /// and must be equivalent to or weaker than the success ordering.
-            pub fn compare_exchange(
+            fn compare_exchange(
                 &self,
                 current: impl Into<Arc<T>>,
                 new: impl Into<Arc<T>>,
@@ -322,15 +333,17 @@ cfg_if!{
                 let current = Arc::into_raw(current) as usize;
                 let new: Arc<T> = new.into();
                 let new = Arc::into_raw(new) as usize;
-                self.data.compare_exchange(current, new, success, failure)
-                    .map(|success| {
-                        let raw = success as *const T;
-                        unsafe { Arc::from_raw(raw) }
-                    })
-                    .map_err(|failure| {
-                        let raw = failure as *const T;
-                        unsafe { Arc::from_raw(raw) }
-                    })
+
+                unsafe {
+                    transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+                        .compare_exchange(current, new, success, failure)
+                        .map(|ok| {
+                            Arc::from_raw(ok as *const T)
+                        })
+                        .map_err(|err| {
+                            Arc::from_raw(err as *const T)
+                        })
+                }
             }
 
             /// Stores an `Arc` pointer into the atomic pointer if the current value is the same as the `current` value.
@@ -348,7 +361,7 @@ cfg_if!{
             /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
             /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
             /// and must be equivalent to or weaker than the success ordering.
-            pub fn compare_exchange_weak(
+            fn compare_exchange_weak(
                 &self,
                 current: impl Into<Arc<T>>,
                 new: impl Into<Arc<T>>,
@@ -359,57 +372,58 @@ cfg_if!{
                 let current = Arc::into_raw(current) as usize;
                 let new: Arc<T> = new.into();
                 let new = Arc::into_raw(new) as usize;
-                self.data.compare_exchange_weak(current, new, success, failure)
-                    .map(|success| {
-                        let raw = success as *const T;
-                        unsafe{ Arc::from_raw(raw) }
-                    })
-                    .map_err(|failure| {
-                        let raw = failure as *const T;
-                        unsafe{ Arc::from_raw(raw) }
-                    })
+                unsafe {
+                    transmute::<&NonZeroUsize, &AtomicUsize>(&self.data)
+                        .compare_exchange_weak(current, new, success, failure)
+                        .map(|ok| {
+                            Arc::from_raw(ok as *const T)
+                        })
+                        .map_err(|err| {
+                            Arc::from_raw(err as *const T)
+                        })
+                }
             }
 
-            /// Fetches the value, and applies a function to it that returns an optional
-            /// new value. Returns a `Result` of `Ok(previous_value)` if the function
-            /// returned `Some(_)`, else `Err(previous_value)`.
-            ///
-            /// Note: This may call the function multiple times if the value has been
-            /// changed from other threads in the meantime, as long as the function
-            /// returns `Some(_)`, but the function will have been applied only once to
-            /// the stored value.
-            ///
-            /// Note: This does not protect the program from the ABA problem. 
-            ///
-            /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
-            /// ordering of this operation. The first describes the required ordering for
-            /// when the operation finally succeeds while the second describes the
-            /// required ordering for loads. These correspond to the success and failure
-            /// orderings of [`AtomicPtr::compare_exchange`] respectively.
-            ///
-            /// Using [`Acquire`] as success ordering makes the store part of this
-            /// operation [`Relaxed`], and using [`Release`] makes the final successful
-            /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
-            /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
-            /// success ordering.
-            pub fn fetch_update<F>(
-                &self,
-                set_order: Ordering,
-                fetch_order: Ordering,
-                mut f: F
-            ) -> Result<Arc<T>, Arc<T>>
-            where 
-                F: FnMut(&Arc<T>) -> Option<Arc<T>>
-            {
-                let mut prev = self.load(fetch_order);
-                while let Some(next) = f(&prev) {
-                    match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
-                        x @ Ok(_) => return x,
-                        Err(next_prev) => prev = next_prev,
-                    }
-                }
-                Err(prev)
-            }
+            // /// Fetches the value, and applies a function to it that returns an optional
+            // /// new value. Returns a `Result` of `Ok(previous_value)` if the function
+            // /// returned `Some(_)`, else `Err(previous_value)`.
+            // ///
+            // /// Note: This may call the function multiple times if the value has been
+            // /// changed from other threads in the meantime, as long as the function
+            // /// returns `Some(_)`, but the function will have been applied only once to
+            // /// the stored value.
+            // ///
+            // /// Note: This does not protect the program from the ABA problem. 
+            // ///
+            // /// `fetch_update` takes two [`Ordering`] arguments to describe the memory
+            // /// ordering of this operation. The first describes the required ordering for
+            // /// when the operation finally succeeds while the second describes the
+            // /// required ordering for loads. These correspond to the success and failure
+            // /// orderings of [`AtomicPtr::compare_exchange`] respectively.
+            // ///
+            // /// Using [`Acquire`] as success ordering makes the store part of this
+            // /// operation [`Relaxed`], and using [`Release`] makes the final successful
+            // /// load [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`],
+            // /// [`Acquire`] or [`Relaxed`] and must be equivalent to or weaker than the
+            // /// success ordering.
+            // fn fetch_update<F>(
+            //     &self,
+            //     set_order: Ordering,
+            //     fetch_order: Ordering,
+            //     mut f: F
+            // ) -> Result<Arc<T>, Arc<T>>
+            // where 
+            //     F: FnMut(&Arc<T>) -> Option<Arc<T>>
+            // {
+            //     let mut prev = self.load(fetch_order);
+            //     while let Some(next) = f(&prev) {
+            //         match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+            //             x @ Ok(_) => return x,
+            //             Err(next_prev) => prev = next_prev,
+            //         }
+            //     }
+            //     Err(prev)
+            // }
         }
     }
 }
