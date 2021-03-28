@@ -1,5 +1,4 @@
 use std::{mem::transmute, mem::transmute_copy, ptr::NonNull, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
-use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use super::{Atomic};
@@ -46,7 +45,7 @@ impl<T> AtomicArc<T> {
     pub unsafe fn from_usize(val: usize) -> Option<Self> {
         let data = NonZeroUsize::new(val)?;
         let ret = Self {
-            data: unsafe { transmute(data) }
+            data: transmute(data)
         };
         Some(ret)
     }
