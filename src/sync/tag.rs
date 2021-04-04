@@ -1,7 +1,5 @@
 use std::{intrinsics::transmute, mem, ptr::NonNull, usize};
-use std::borrow::Borrow;
 use std::num::NonZeroUsize;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
@@ -98,9 +96,7 @@ impl<T> TaggedArc<T> {
     pub unsafe fn from_usize(data: usize) -> Option<Self> {
         let data = NonZeroUsize::new(data)?;
         let ret = Self {
-            data: unsafe {
-                transmute(data)
-            }
+            data: transmute(data)
         };
         Some(ret)
     }
@@ -258,7 +254,7 @@ mod tests {
         // let raw = Arc::into_raw(ptr);
         println!("{:p}", ptr);
         let tag = 0x01;
-        let comp = TaggedArc::from_arc(ptr).with_tag(tag);
+        let comp = TaggedArc::from_arc(ptr.clone()).with_tag(tag);
         let (out_ptr, out_tag) = TaggedArc::decompose(comp);
         // let (out_ptr, out_tag) = decompose_tag::<Box<i32>>(comp.data.get());
         println!("{:?}", out_ptr);
@@ -272,9 +268,9 @@ mod tests {
 
         println!("{:p}", out_ptr);
         println!("{:?}", out_ptr);
-        // println!("{:?}", out_tag);
-        // assert_eq!(ptr, out_ptr);
-        // assert_eq!(tag, out_tag);
+        println!("{:?}", out_tag);
+        assert_eq!(ptr, out_ptr);
+        assert_eq!(tag, out_tag);
     }
 
     #[test]

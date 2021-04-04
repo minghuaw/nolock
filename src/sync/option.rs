@@ -227,4 +227,11 @@ mod tests {
         println!("[3] opt becomes {:?}", opt);
         // assert_eq!(opt, None);
     }
+
+    #[test]
+    fn test_none() {
+        let opt: Option<TaggedArc<i32>> = None;
+        assert_eq!(opt.is_none(), true);
+
+    }
 }
