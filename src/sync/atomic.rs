@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 pub trait Atomic {
-    type Elem;
+    type Target;
 
     /// Loads a value from the atomic pointer.
     ///
@@ -12,7 +12,7 @@ pub trait Atomic {
     /// # Panics
     /// 
     /// Panics if `order` is `Release` or `AcqRel`.
-    fn load(&self, order: Ordering) -> Self::Elem;
+    fn load(&self, order: Ordering) -> Self::Target;
     
     /// Stores a value into the pointer
     ///
@@ -23,14 +23,14 @@ pub trait Atomic {
     /// # Panics
     /// 
     /// Panics if `order` is `Acquire` or `AcqRel`.
-    fn store(&self, val: impl Into<Self::Elem>, order: Ordering);
+    fn store(&self, new: impl Into<Self::Target>, order: Ordering);
     
     /// Stores a `TaggedArc` pointer into the atomic pointer, returning the previously stored pointer
     ///
     /// swap takes an `Ordering` argument which describes the memory ordering of this operation. 
     /// All ordering modes are possible. Note that using `Acquire` makes the store part of this 
     /// operation `Relaxed`, and using `Release` makes the load part `Relaxed`.
-    fn swap(&self, val: impl Into<Self::Elem>, order: Ordering) -> Self::Elem;
+    fn swap(&self, new: impl Into<Self::Target>, order: Ordering) -> Self::Target;
 
     /// Stores a `TaggedArc` pointer into the if the current value is the same as the `current` value.
     /// The tag will also be compared.
@@ -48,11 +48,11 @@ pub trait Atomic {
     /// and must be equivalent to or weaker than the success ordering.
     fn compare_exchange(
         &self,
-        current: impl Into<Self::Elem>,
-        new: impl Into<Self::Elem>,
+        current: impl Into<Self::Target>,
+        new: impl Into<Self::Target>,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<Self::Elem, Self::Elem>;
+    ) -> Result<Self::Target, Self::Target>;
 
     /// Stores an `Arc` pointer into the atomic pointer if the current value is the same as the `current` value.
     ///
@@ -71,11 +71,11 @@ pub trait Atomic {
     /// and must be equivalent to or weaker than the success ordering.
     fn compare_exchange_weak(
         &self,
-        current: impl Into<Self::Elem>,
-        new: impl Into<Self::Elem>,
+        current: impl Into<Self::Target>,
+        new: impl Into<Self::Target>,
         success: Ordering,
         failure: Ordering
-    ) -> Result<Self::Elem, Self::Elem>;
+    ) -> Result<Self::Target, Self::Target>;
 
     /// Fetches the value, and applies a function to it that returns an optional
     /// new value. Returns a `Result` of `Ok(previous_value)` if the function
@@ -104,9 +104,9 @@ pub trait Atomic {
         set_order: Ordering,
         fetch_order: Ordering,
         mut f: F 
-    ) -> Result<Self::Elem, Self::Elem>
+    ) -> Result<Self::Target, Self::Target>
     where 
-        F: FnMut(&Self::Elem) -> Option<Self::Elem>
+        F: FnMut(&Self::Target) -> Option<Self::Target>
     {
         let mut prev = self.load(fetch_order);
         while let Some(next) = f(&prev) {

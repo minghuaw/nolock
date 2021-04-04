@@ -57,7 +57,7 @@ impl<T> AtomicArc<T> {
 
 #[cfg(feature = "tag")]
 impl<T> Atomic for AtomicArc<T> {
-    type Elem = TaggedArc<T>;
+    type Target = TaggedArc<T>;
 
     /// Loads a value from the atomic pointer.
     ///
@@ -250,7 +250,7 @@ impl<T> Atomic for AtomicArc<T> {
 
 #[cfg(not(feature = "tag"))]
 impl<T> Atomic for AtomicArc<T> {
-    type Elem = Arc<T>;
+    type Target = Arc<T>;
 
     /// Loads a value from the atomic pointer.
     ///

@@ -1,4 +1,4 @@
-use std::{intrinsics::transmute, mem::transmute_copy, sync::{Arc, atomic::AtomicUsize}};
+use std::{intrinsics::transmute, mem::transmute_copy, num::NonZeroUsize, sync::{Arc, atomic::AtomicUsize}, usize};
 use std::sync::atomic::Ordering;
 
 use super::Atomic;
@@ -8,148 +8,181 @@ use super::TaggedArc;
 
 #[cfg(feature = "tag")]
 impl<T> Atomic for Option<TaggedArc<T>> {
-    type Elem = TaggedArc<T>;
+    type Target = Self;
 
-    fn load(&self, order: Ordering) -> Self::Elem {
+    fn load(&self, order: Ordering) -> Self {
         let ptr = unsafe {
-            let addr = transmute_copy::<Self, AtomicUsize>(self)
+            let addr = transmute_copy::<Self, AtomicUsize>(self) 
                 .load(order);
-            TaggedArc::from_usize(addr)
-                .expect("TaggedArc cannot be Null")
+            match TaggedArc::from_usize(addr) {
+                Some(ptr) => ptr,
+                None => return None
+            }
         };
         // clone because `load` does not give away ownership
-        TaggedArc::clone(&ptr)
+        Some(TaggedArc::clone(&ptr))
     }
 
-    fn store(&self, val: impl Into<Self::Elem>, order: Ordering) {
-        let ptr: Self::Elem = val.into();
-        let new_data = ptr.into_usize();
-
+    fn store(&self, new: impl Into<Self>, order: Ordering) {
+        let new: Self = new.into();
+        
         unsafe {
+            let new_data = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .store(new_data, order)
         }
     }
 
-    fn swap(&self, val: impl Into<Self::Elem>, order: Ordering) -> Self::Elem {
-        let ptr: Self::Elem = val.into();
-        let new_data = ptr.into_usize();
-
+    fn swap(&self, new: impl Into<Self::Target>, order: Ordering) -> Self::Target {
+        let new: Self::Target = new.into();
+        
         unsafe {
+            let new_data = transmute::<Self, usize>(new);
             let old_data = transmute::<&Self, &AtomicUsize>(self)
                 .swap(new_data, order);
-            TaggedArc::from_usize(old_data)
-                .expect("TaggedArc cannot be Null")
+            TaggedArc::from_usize(old_data) 
         }
     }
 
-    fn compare_exchange(&self, current: impl Into<Self::Elem>, new: impl Into<Self::Elem>, success: Ordering, failure: Ordering) -> Result<Self::Elem, Self::Elem> {
-        let current: Self::Elem = current.into();
-        let current = current.into_usize();
-        let new: Self::Elem = new.into();
-        let new = new.into_usize();
+    fn compare_exchange(&self, current: impl Into<Self::Target>, new: impl Into<Self::Target>, success: Ordering, failure: Ordering) -> Result<Self::Target, Self::Target> {
+        let current: Self::Target = current.into();
+        let new: Self::Target = new.into();
 
         unsafe {
+            let current = transmute::<Self, usize>(current);
+            let new = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .compare_exchange(current, new, success, failure)
                 .map(|ok| {
                     TaggedArc::from_usize(ok)
-                        .expect("TaggedArc cannot be Null")
                 })
                 .map_err(|err| {
                     TaggedArc::from_usize(err)
-                        .expect("TaggedArc cannot be Null")
                 })
         }
     }
 
-    fn compare_exchange_weak(&self, current: impl Into<Self::Elem>, new: impl Into<Self::Elem>, success: Ordering, failure: Ordering) -> Result<Self::Elem, Self::Elem> {
-        let current: Self::Elem = current.into();
-        let current = current.into_usize();
-        let new: Self::Elem = new.into();
-        let new = new.into_usize();
+    fn compare_exchange_weak(&self, current: impl Into<Self::Target>, new: impl Into<Self::Target>, success: Ordering, failure: Ordering) -> Result<Self::Target, Self::Target> {
+        let current: Self::Target = current.into();
+        let new: Self::Target = new.into();
 
         unsafe {
+            let current = transmute::<Self, usize>(current);
+            let new = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .compare_exchange_weak(current, new, success, failure)
                 .map(|ok| {
                     TaggedArc::from_usize(ok)
-                        .expect("TaggedArc cannot be Null")
                 })
                 .map_err(|err| {
                     TaggedArc::from_usize(err)
-                        .expect("TaggedArc cannot be Null")
                 })
         }
     }
 }
 
 impl<T> Atomic for Option<Arc<T>> {
-    type Elem = Arc<T>;
+    type Target = Self;
 
-    fn load(&self, order: Ordering) -> Self::Elem {
-        let ptr = unsafe {
-            let addr = transmute_copy::<Self, AtomicUsize>(self)
-                .load(order);
-            Arc::from_raw(addr as *const T) 
+    fn load(&self, order: Ordering) -> Self::Target {
+        let addr = unsafe { transmute_copy::<Self, AtomicUsize>(self) }
+            .load(order);
+        let ptr = match NonZeroUsize::new(addr) {
+            Some(data) => {
+                unsafe {
+                    let data: usize = transmute(data);
+                    Arc::from_raw(data as *const T)
+                }
+            },
+            None => return None
         };
         // clone because `load` does not give away ownership
-        Arc::clone(&ptr)
+        Some(Arc::clone(&ptr))
     }
 
-    fn store(&self, val: impl Into<Self::Elem>, order: Ordering) {
-        let ptr: Self::Elem = val.into();
-        let new_data = Arc::into_raw(ptr) as usize;
+    fn store(&self, new: impl Into<Self::Target>, order: Ordering) {
+        let new: Self::Target = new.into();
 
         unsafe {
+            let new_data = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .store(new_data, order)
         }
     }
 
-    fn swap(&self, val: impl Into<Self::Elem>, order: Ordering) -> Self::Elem {
-        let ptr: Self::Elem = val.into();
-        let new_data = Arc::into_raw(ptr) as usize;
+    fn swap(&self, new: impl Into<Self::Target>, order: Ordering) -> Self::Target {
+        let new: Self::Target = new.into();
 
         unsafe {
+            let new_data = transmute::<Self, usize>(new);
             let old_data = transmute::<&Self, &AtomicUsize>(self)
                 .swap(new_data, order);
-            Arc::from_raw(old_data as *const T)
+            match NonZeroUsize::new(old_data) {
+                Some(data) => {
+                    let data: usize = transmute(data);
+                    Some(Arc::from_raw(data as *const T))
+                },
+                None => None
+            }
         }
     }
 
-    fn compare_exchange(&self, current: impl Into<Self::Elem>, new: impl Into<Self::Elem>, success: Ordering, failure: Ordering) -> Result<Self::Elem, Self::Elem> {
-        let current: Self::Elem = current.into();
-        let current = Arc::into_raw(current) as usize;
-        let new: Self::Elem = new.into();
-        let new = Arc::into_raw(new) as usize;
+    fn compare_exchange(&self, current: impl Into<Self::Target>, new: impl Into<Self::Target>, success: Ordering, failure: Ordering) -> Result<Self::Target, Self::Target> {
+        let current: Self::Target = current.into();
+        let new: Self::Target = new.into();
 
         unsafe {
+            let current = transmute::<Self, usize>(current);
+            let new = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .compare_exchange(current, new, success, failure)
                 .map(|ok| {
-                    Arc::from_raw(ok as *const T)
+                    match NonZeroUsize::new(ok) {
+                        Some(data) => {
+                            let data: usize = transmute(data);
+                            Some(Arc::from_raw(data as *const T))
+                        },
+                        None => None
+                    }
                 })
                 .map_err(|err| {
-                    Arc::from_raw(err as *const T)
+                    match NonZeroUsize::new(err) {
+                        Some(data) => {
+                            let data: usize = transmute(data);
+                            Some(Arc::from_raw(data as *const T))
+                        },
+                        None => None
+                    }
                 })
         }
     }
 
-    fn compare_exchange_weak(&self, current: impl Into<Self::Elem>, new: impl Into<Self::Elem>, success: Ordering, failure: Ordering) -> Result<Self::Elem, Self::Elem> {
-        let current: Self::Elem = current.into();
-        let current = Arc::into_raw(current) as usize;
-        let new: Self::Elem = new.into();
-        let new = Arc::into_raw(new) as usize;
+    fn compare_exchange_weak(&self, current: impl Into<Self::Target>, new: impl Into<Self::Target>, success: Ordering, failure: Ordering) -> Result<Self, Self> {
+        let current: Self::Target = current.into();
+        let new: Self::Target = new.into();
 
         unsafe {
+            let current = transmute::<Self, usize>(current);
+            let new = transmute::<Self, usize>(new);
             transmute::<&Self, &AtomicUsize>(self)
                 .compare_exchange_weak(current, new, success, failure)
                 .map(|ok| {
-                    Arc::from_raw(ok as *const T)
+                    match NonZeroUsize::new(ok) {
+                        Some(data) => {
+                            let data: usize = transmute(data);
+                            Some(Arc::from_raw(data as *const T))
+                        },
+                        None => None
+                    }
                 })
                 .map_err(|err| {
-                    Arc::from_raw(err as *const T)
+                    match NonZeroUsize::new(err) {
+                        Some(data) => {
+                            let data: usize = transmute(data);
+                            Some(Arc::from_raw(data as *const T))
+                        },
+                        None => None
+                    }
                 })
         }
     }
@@ -229,13 +262,20 @@ mod tests {
     }
 
     #[test]
-    fn test_none() {
+    fn test_store_to_none() {
         let opt: Option<TaggedArc<i32>> = None;
         assert_eq!(opt.is_none(), true);
 
         let ptr = TaggedArc::compose(Arc::new(13), 0);
         opt.store(ptr, Ordering::Relaxed);
-        println!("{:?}", opt);
         assert_eq!(opt.is_none(), false);
+    }
+
+    #[test]
+    fn test_swap() {
+        let opt = Some(TaggedArc::compose(Arc::new(13), 0));
+        assert_eq!(opt.is_none(), false);
+
+        opt.swap(None, Ordering::Relaxed);
     }
 }
