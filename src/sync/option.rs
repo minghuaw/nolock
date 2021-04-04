@@ -233,5 +233,9 @@ mod tests {
         let opt: Option<TaggedArc<i32>> = None;
         assert_eq!(opt.is_none(), true);
 
+        let ptr = TaggedArc::compose(Arc::new(13), 0);
+        opt.store(ptr, Ordering::Relaxed);
+        println!("{:?}", opt);
+        assert_eq!(opt.is_none(), false);
     }
 }

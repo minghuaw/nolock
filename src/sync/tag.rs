@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{intrinsics::transmute, mem, ptr::NonNull, usize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -46,8 +47,8 @@ impl<T> TaggedArc<T> {
         Self::from_arc(ptr)
     }
 
-    pub fn compose(val: Arc<T>, tag: usize) -> Self {
-        let ptr: Arc<T> = val.into();
+    pub fn compose(ptr: Arc<T>, tag: usize) -> Self {
+        let ptr: Arc<T> = ptr.into();
         let raw = Arc::into_raw(ptr) as usize;
         let data = compose_tag::<T>(raw, tag);
         // SAFETY: data is composed from a valid pointer addr and tag
@@ -74,7 +75,7 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn decompose(ptr: TaggedArc<T>) -> (Arc<T>, usize) {
-        let (data, tag) = decompose_tag::<T>(
+        let (data, tag) = decompose_tag::<Arc<T>>(
             // SAFETY: only valid pointers will be stored
             unsafe { transmute::<NonNull<T>, usize>(ptr.data) }    
         );
@@ -102,7 +103,7 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn as_raw(&self) -> *const T {
-        let (data, _) = decompose_tag::<T>(
+        let (data, _) = decompose_tag::<Arc<T>>(
             unsafe { transmute::<NonNull<T>, usize>(self.data) }
         );
         data as *const T
@@ -118,7 +119,7 @@ impl<T> TaggedArc<T> {
     }
 
     pub fn tag(&self) -> usize {
-        let (_, tag) = decompose_tag::<T>(
+        let (_, tag) = decompose_tag::<Arc<T>>(
             unsafe { transmute::<NonNull<T>, usize>(self.data) }
         );
         tag
@@ -154,7 +155,7 @@ impl<T> From<TaggedArc<T>> for Arc<T> {
 
 impl<T> Clone for TaggedArc<T> {
     fn clone(&self) -> Self {
-        let (data, tag) = decompose_tag::<T>(
+        let (data, tag) = decompose_tag::<Arc<T>>(
             unsafe { transmute::<NonNull<T>, usize>(self.data) }
         );
         let ptr = unsafe { Arc::from_raw(data as *const T) };
@@ -164,7 +165,15 @@ impl<T> Clone for TaggedArc<T> {
     }
 }
 
-
+impl<T: fmt::Debug> fmt::Debug for TaggedArc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (data, _) = decompose_tag::<Arc<T>>(
+            unsafe { transmute::<NonNull<T>, usize>(self.data) }
+        );       
+        let ptr = unsafe { Arc::from_raw(data as *const T) };
+        fmt::Debug::fmt(&ptr, f) 
+    }
+}
 
 // impl<T> Drop for TaggedArc<T> {
 //     fn drop(&mut self) {
