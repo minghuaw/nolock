@@ -69,13 +69,17 @@ impl<T> Atomic for Option<TaggedArc<T>> {
         unsafe {
             let current = transmute::<Self, usize>(current);
             let new = transmute::<Self, usize>(new);
+            println!("current: 0x{:x}", current);
+            println!("new: 0x{:x}", new);
             transmute::<&Self, &AtomicUsize>(self)
                 .compare_exchange_weak(current, new, success, failure)
                 .map(|ok| {
-                    TaggedArc::from_usize(ok)
+                    println!("ok: 0x{:x}", ok);
+                    TaggedArc::from_usize(ok).clone()
                 })
                 .map_err(|err| {
-                    TaggedArc::from_usize(err)
+                    println!("err: 0x{:x}", err);
+                    TaggedArc::from_usize(err).clone()
                 })
         }
     }
@@ -277,5 +281,90 @@ mod tests {
         assert_eq!(opt.is_none(), false);
 
         opt.swap(None, Ordering::Relaxed);
+        assert_eq!(opt.is_none(), true);
+    }
+
+    #[test]
+    fn test_load() {
+        let o = Some(TaggedArc::compose(Arc::new(13), 0));
+        let out = o.load(Ordering::Relaxed);
+        assert_eq!(out.is_none(), false);
+
+        let o: Option<TaggedArc<i32>> = None;
+        let out = o.load(Ordering::Relaxed);
+        assert_eq!(out.is_none(), true);
+    }
+
+    #[test]
+    fn test_taggedarc_compare_exchange_weak() {
+        let arc = Arc::new(13);
+        let keep_a_copy = arc.clone();
+        println!("[1] arc: {:p}", arc);
+        let ptr = TaggedArc::compose(arc, 0);
+        let old = Some(ptr);
+        println!("[2] old: {:p}", &old);
+
+        let new_arc = Arc::new(15);
+        println!("[3] new_arc: {:p}", new_arc);
+        let new_ptr = TaggedArc::compose(new_arc, 0);
+        let new = Some(new_ptr);
+        println!("[4] new: {:p}", &new);
+
+        println!("-------------------");
+
+        let out = old.compare_exchange_weak(None, new, Ordering::Acquire, Ordering::Relaxed);
+        println!("{:?}", out);
+        assert!(out.is_err());
+
+        println!("-------------------");
+        let current = old.load(Ordering::Relaxed);
+        
+        let new_arc = Arc::new(15);
+        println!("[5] new_arc: {:p}", new_arc);
+        let new_ptr = TaggedArc::compose(new_arc, 0);
+        let new = Some(new_ptr);        
+        
+        // let new_arc = Arc::new(15);
+        // println!("[5] new_arc: {:p}", new_arc);
+        // let new_ptr = TaggedArc::compose(new_arc, 0);
+        // let new = Some(new_ptr); 
+
+        let out = old.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire);
+        println!("{:?}", out);
+        assert!(out.is_ok());
+
+        // println!("-------------------");
+        // let out = old.compare_exchange_weak(None, None, Ordering::Acquire, Ordering::Relaxed);
+        // println!("{:?}", out);
+    }    
+
+    #[test]
+    fn test_atomic_usize_compare_exchange_weak() {
+        let a = AtomicUsize::new(3);
+        let out = a.compare_exchange_weak(1, 4, Ordering::AcqRel, Ordering::Acquire);
+        println!("{:?}", out);
+
+        let out = a.compare_exchange_weak(3, 4, Ordering::AcqRel, Ordering::Acquire);
+        println!("{:?}", out);
+    }
+
+    #[test]
+    fn test_arc_compare_exchange_weak() {
+        let old_arc = Arc::new(13);
+        println!("[1] old arc: {:p}", old_arc);
+        // let old = Some(old_arc);
+
+        unsafe {
+            // let data = transmute::<Arc<i32>, usize>(old_arc)
+                // .load(Ordering::Acquire);
+                // .into_inner();
+                // ;
+
+            let raw = Arc::into_raw(old_arc.clone());
+            println!("{:p}", raw);
+            let data = raw as usize;
+            let data: AtomicUsize = transmute(old_arc);
+            println!("data: 0x{:x}", data.into_inner());
+        }
     }
 }

@@ -2,6 +2,7 @@ use core::fmt;
 use std::{intrinsics::transmute, mem, ptr::NonNull, usize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+// use std::marker::PhantomData;
 
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
 #[inline]
@@ -36,6 +37,8 @@ pub(crate) fn decompose_tag<T>(data: usize) -> (usize, usize) {
 pub struct TaggedArc<T> {
     // data is a tagged pointer
     pub(crate) data: NonNull<T>,
+    // pub(crate) data: NonZeroUsize,
+    // _marker: PhantomData<T>
 }
 
 unsafe impl<T: Sync + Send> Send for TaggedArc<T> {}
