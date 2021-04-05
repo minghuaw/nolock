@@ -198,7 +198,7 @@ impl<T> Atomic for Option<Arc<T>> {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
-    use std::mem::size_of;
+    use std::{mem::size_of};
     use std::num::NonZeroUsize;
     use std::sync::Arc;
 
@@ -296,25 +296,38 @@ mod tests {
     }
 
     #[test]
+    fn test_() {
+        unimplemented!();
+    }
+
+    #[test]
     fn test_taggedarc_compare_exchange_weak() {
         let arc = Arc::new(13);
-        let keep_a_copy = arc.clone();
+        // let keep_a_copy = arc.clone();
         println!("[1] arc: {:p}", arc);
         let ptr = TaggedArc::compose(arc, 0);
         let old = Some(ptr);
-        println!("[2] old: {:p}", &old);
+        // println!("[2] old: {:p}", &old);
 
         let new_arc = Arc::new(15);
         println!("[3] new_arc: {:p}", new_arc);
         let new_ptr = TaggedArc::compose(new_arc, 0);
         let new = Some(new_ptr);
-        println!("[4] new: {:p}", &new);
+        // println!("[4] new: {:p}", &new);
 
         println!("-------------------");
-
+        let current = old.load(Ordering::Relaxed);
+        // let out = old.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire);
         let out = old.compare_exchange_weak(None, new, Ordering::Acquire, Ordering::Relaxed);
-        println!("{:?}", out);
-        assert!(out.is_err());
+        // println!("{:?}", &out);
+        // assert!(out.is_err());
+
+        // let out = unsafe {
+        //     let current: usize = transmute(current);
+        //     let new: usize = transmute(new);
+        //     let tmp = transmute::<&_, &AtomicUsize>(&old);    
+        //     tmp.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire)        
+        // };
 
         println!("-------------------");
         let current = old.load(Ordering::Relaxed);
@@ -329,9 +342,10 @@ mod tests {
         // let new_ptr = TaggedArc::compose(new_arc, 0);
         // let new = Some(new_ptr); 
 
-        let out = old.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire);
+        // let out = old.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire);
+        let out = old.compare_exchange_weak(None, new, Ordering::AcqRel, Ordering::Acquire);
         println!("{:?}", out);
-        assert!(out.is_ok());
+        // assert!(out.is_ok());
 
         // println!("-------------------");
         // let out = old.compare_exchange_weak(None, None, Ordering::Acquire, Ordering::Relaxed);
@@ -363,8 +377,42 @@ mod tests {
             let raw = Arc::into_raw(old_arc.clone());
             println!("{:p}", raw);
             let data = raw as usize;
-            let data: AtomicUsize = transmute(old_arc);
-            println!("data: 0x{:x}", data.into_inner());
+            let data: AtomicUsize = transmute(data);
+            let out = data.load(Ordering::Acquire);
+            println!("data: 0x{:x}", out);
         }
+    }
+
+    #[test]
+    fn test_arc_load() {
+        let ptr = Arc::new(13);
+        let ptr_addr = format!("{:p}", ptr);
+        println!("ptr_addr: {}", ptr_addr);
+        let opt = Some(ptr);
+        println!("{:p}", &opt);
+        // let out = opt.load(Ordering::Acquire); // this will give wrong result
+        // This will create memory error
+        // let out = unsafe {
+        //     transmute::<_, AtomicUsize>(opt).load(Ordering::Acquire)
+        // };
+
+        let out = unsafe {
+            opt.map(
+                |a| {
+                    let raw = Arc::into_raw(a);
+                    let data = raw as usize;
+                    transmute::<_, AtomicUsize>(data).load(Ordering::Acquire)
+                }
+            ).unwrap()
+        };
+        
+        // match out {
+        //     Some(a) => println!("{:p}", a),
+        //     None => {}
+        // }
+
+        let out_addr = format!("0x{:x}", out);
+        println!("out_addr: {}", out_addr);
+        assert_eq!(ptr_addr, out_addr);
     }
 }
